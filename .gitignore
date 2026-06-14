@@ -5,9 +5,7 @@ __pycache__/
 *.pyo
 
 # Собранные / крупные / сторонние бинарники — раздаются через GitHub Releases
-ZapretControl.exe
-ZapretControl_old.exe
-ZapretControl_new.exe
+ZapretControl*.exe
 TgWsProxy_windows.exe
 
 # Локальное состояние
