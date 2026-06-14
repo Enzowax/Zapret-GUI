@@ -40,7 +40,9 @@ SIDEBAR_BG = ("#e7e9f1", "#0f1014")
 CARD_BG = ("#ffffff", "#1f2129")
 CARD_HOVER = ("#e9ebf3", "#272a34")
 BTN_HOVER = ("#d8dbe6", "#343a46")     # ховер неакцентной кнопки
-SWITCH_KNOB = ("#ffffff", "#dfe3e8")
+SWITCH_OFF = ("#aeb4c2", "#3a3f4b")    # дорожка выключенного тумблера
+SWITCH_KNOB = ("#ffffff", "#f0f2f5")   # бегунок тумблера
+FIELD_BG = ("#dfe3ec", "#2a2e38")      # фон выпадающих списков/полей
 LOG_BG = ("#ffffff", "#101218")
 LOG_FG = ("#1a1c22", "#d7dbe0")
 TEXT = ("#1a1c22", "#e9eaf0")
@@ -290,7 +292,8 @@ class ZapretApp(ctk.CTk):
             self.strategy_var.set(names[0])
         self.strategy_menu = ctk.CTkOptionMenu(
             box, values=names or ["—"], variable=self.strategy_var, width=290,
-            height=36, font=(FONT, 13), corner_radius=8, fg_color=CARD_HOVER,
+            height=36, font=(FONT, 13), corner_radius=8, fg_color=FIELD_BG, text_color=TEXT,
+                          dropdown_fg_color=CARD_BG, dropdown_text_color=TEXT,
             button_color=ACCENT, button_hover_color=ACCENT_HOVER,
             command=self._on_strategy_pick)
         self.strategy_menu.pack(side="left", padx=4)
@@ -309,7 +312,7 @@ class ZapretApp(ctk.CTk):
         c = self._card_row(p, "🎮", "Игровой фильтр", "Расширяет диапазон портов для игр")
         self.game_seg = ctk.CTkSegmentedButton(
             c, values=["Выкл", "TCP+UDP", "TCP", "UDP"], command=self._on_game_seg,
-            font=(FONT, 12), selected_color=ACCENT, selected_hover_color=ACCENT_HOVER)
+            font=(FONT, 12), text_color=TEXT, selected_color=ACCENT, selected_hover_color=ACCENT_HOVER)
         self.game_seg.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
         self.game_seg.set({"off": "Выкл", "all": "TCP+UDP", "tcp": "TCP",
                            "udp": "UDP"}[zc.get_game_mode()])
@@ -317,16 +320,16 @@ class ZapretApp(ctk.CTk):
         c = self._card_row(p, "🚀", "Автозапуск обхода",
                            "Запускать обход при старте приложения")
         self.autostart_switch = ctk.CTkSwitch(c, text="", command=self._on_autostart_toggle,
-                                              progress_color=ACCENT, button_color=SWITCH_KNOB)
-        self.autostart_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
+                                              progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB)
+        self.autostart_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
         if self.cfg.get("autostart_bypass"):
             self.autostart_switch.select()
 
         c = self._card_row(p, "🩺", "Авто-восстановление",
                            "Перезапускать обход, если он упал или перестал работать")
         self.recovery_switch = ctk.CTkSwitch(c, text="", command=self._on_recovery_toggle,
-                                             progress_color=ACCENT, button_color=SWITCH_KNOB)
-        self.recovery_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
+                                             progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB)
+        self.recovery_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
         if self.cfg.get("auto_recovery"):
             self.recovery_switch.select()
 
@@ -340,10 +343,10 @@ class ZapretApp(ctk.CTk):
         ctk.CTkSegmentedButton(box, values=["Cloudflare", "Google"],
                                variable=self.doh_provider, font=(FONT, 12),
                                command=self._on_doh_provider_change,
-                               selected_color=ACCENT,
+                               text_color=TEXT, selected_color=ACCENT,
                                selected_hover_color=ACCENT_HOVER).pack(side="left", padx=6)
         self.doh_switch = ctk.CTkSwitch(box, text="", command=self._on_doh_toggle,
-                                        progress_color=ACCENT, button_color=SWITCH_KNOB)
+                                        progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB)
         self.doh_switch.pack(side="left", padx=10)
         if _doh["enabled"]:
             self.doh_switch.select()
@@ -471,7 +474,7 @@ class ZapretApp(ctk.CTk):
         c = self._card(p)
         self.tg_link_var = ctk.StringVar(value=zc.tg_proxy_url())
         ctk.CTkEntry(c, textvariable=self.tg_link_var, font=(FONT, 12), height=36,
-                     fg_color=WIN_BG, border_width=0).grid(
+                     fg_color=FIELD_BG, text_color=TEXT, border_width=0).grid(
             row=0, column=0, sticky="ew", padx=(12, 8), pady=12)
         c.grid_columnconfigure(0, weight=1)
         self._btn(c, "Скопировать", self.on_tg_copy, width=130).grid(
@@ -517,8 +520,8 @@ class ZapretApp(ctk.CTk):
         c = self._card_row(p, "🔄", "Автопроверка обновлений",
                            "Проверять новые версии при запуске")
         self.update_switch = ctk.CTkSwitch(c, text="", command=self._on_update_toggle,
-                                           progress_color=ACCENT, button_color=SWITCH_KNOB)
-        self.update_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
+                                           progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB)
+        self.update_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
         if zc.get_update_enabled():
             self.update_switch.select()
 
@@ -530,7 +533,7 @@ class ZapretApp(ctk.CTk):
         ctk.CTkSegmentedButton(c, values=list(APPEARANCE.keys()),
                                variable=self.appearance_var, font=(FONT, 12),
                                command=self._on_appearance_change,
-                               selected_color=ACCENT,
+                               text_color=TEXT, selected_color=ACCENT,
                                selected_hover_color=ACCENT_HOVER).grid(
             row=0, column=2, rowspan=2, padx=14, pady=12)
 
@@ -538,7 +541,8 @@ class ZapretApp(ctk.CTk):
         self.theme_var = ctk.StringVar(value=self.cfg.get("accent_name", "Фиолетовая"))
         ctk.CTkOptionMenu(c, values=list(THEMES.keys()), variable=self.theme_var,
                           command=self._on_theme_change, width=160, height=36,
-                          font=(FONT, 13), corner_radius=8, fg_color=CARD_HOVER,
+                          font=(FONT, 13), corner_radius=8, fg_color=FIELD_BG, text_color=TEXT,
+                          dropdown_fg_color=CARD_BG, dropdown_text_color=TEXT,
                           button_color=ACCENT, button_hover_color=ACCENT_HOVER).grid(
             row=0, column=2, rowspan=2, padx=14, pady=12)
 
@@ -546,8 +550,8 @@ class ZapretApp(ctk.CTk):
         c = self._card_row(p, "📥", "Сворачивать в трей",
                            "При закрытии окна прятать в трей (обход продолжит работать)")
         self.tray_switch = ctk.CTkSwitch(c, text="", command=self._on_tray_toggle,
-                                         progress_color=ACCENT, button_color=SWITCH_KNOB)
-        self.tray_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
+                                         progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB)
+        self.tray_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
         if self.cfg.get("minimize_to_tray", True):
             self.tray_switch.select()
 
