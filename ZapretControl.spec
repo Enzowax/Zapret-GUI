@@ -34,15 +34,18 @@ if os.path.exists(os.path.join(ROOT, "presets.json")):
 # отдельный TgWsProxy.exe больше не нужен.
 
 ctk_datas, ctk_binaries, ctk_hidden = collect_all("customtkinter")
-datas += ctk_datas
+pil_datas, pil_binaries, pil_hidden = collect_all("PIL")
+pystray_datas, pystray_binaries, pystray_hidden = collect_all("pystray")
+datas += ctk_datas + pil_datas + pystray_datas
 
 a = Analysis(
     ["zapret_app.pyw"],
     pathex=[ROOT],
-    binaries=ctk_binaries,
+    binaries=ctk_binaries + pil_binaries + pystray_binaries,
     datas=datas,
-    hiddenimports=ctk_hidden + ["darkdetect", "zapret_core"]
-                  + collect_submodules("tgproxy"),
+    hiddenimports=(ctk_hidden + pil_hidden + pystray_hidden
+                   + ["darkdetect", "zapret_core"]
+                   + collect_submodules("tgproxy")),
     hookspath=[], runtime_hooks=[], excludes=[], noarchive=False,
 )
 pyz = PYZ(a.pure)

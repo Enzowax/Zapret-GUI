@@ -23,6 +23,13 @@ import customtkinter as ctk
 
 import zapret_core as zc
 
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+    _TRAY_OK = True
+except Exception:
+    _TRAY_OK = False
+
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -66,6 +73,8 @@ class ZapretApp(ctk.CTk):
 
         # Фаза 3: авто-восстановление / логи / завершение
         self._closing = False
+        self.tray = None
+        self._tray_hinted = False
         self.active_args = None          # аргументы текущего запуска (для watchdog)
         try:
             self._logf = open(zc.current_log_path(), "a", encoding="utf-8")
@@ -89,7 +98,8 @@ class ZapretApp(ctk.CTk):
         threading.Thread(target=self._watchdog_loop, daemon=True).start()
         if self.cfg.get("autostart_bypass"):
             self.after(1400, self._autostart_bypass)
-        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self._setup_tray()
+        self.protocol("WM_DELETE_WINDOW", self._on_x)
 
     def _init_ttk_style(self):
         style = ttk.Style()
@@ -281,6 +291,14 @@ class ZapretApp(ctk.CTk):
         self.recovery_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
         if self.cfg.get("auto_recovery"):
             self.recovery_switch.select()
+
+        c = self._card_row(p, "📥", "Сворачивать в трей",
+                           "При закрытии окна прятать в трей (обход продолжит работать)")
+        self.tray_switch = ctk.CTkSwitch(c, text="", command=self._on_tray_toggle,
+                                         progress_color=ACCENT, button_color="#dfe3e8")
+        self.tray_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
+        if self.cfg.get("minimize_to_tray", True):
+            self.tray_switch.select()
 
         c = self._card_row(p, "🌐", "IPSet-фильтр", "Текущее состояние списка IP")
         self.ipset_label = ctk.CTkLabel(c, text="…", font=(FONT, 12), text_color=MUTED)
@@ -528,6 +546,12 @@ class ZapretApp(ctk.CTk):
             self.tg_title.configure(text="Telegram-прокси остановлен")
             self.tg_sub.configure(text="Прокси не запущен")
 
+        if self.tray is not None:
+            try:
+                self.tray.icon = self._make_tray_image(running)
+            except Exception:
+                pass
+
     # -- управление обходом ----------------------------------------------- #
     def _selected_preset(self):
         name = self.strategy_var.get()
@@ -747,6 +771,73 @@ class ZapretApp(ctk.CTk):
             os.startfile(zc.LOGS)
         except Exception as e:
             self.log_msg(str(e))
+
+    # -- трей ------------------------------------------------------------- #
+    def _on_tray_toggle(self):
+        self.cfg["minimize_to_tray"] = bool(self.tray_switch.get())
+        zc.save_config(self.cfg)
+
+    def _make_tray_image(self, running):
+        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle([4, 4, 60, 60], radius=14, fill=ACCENT)
+        d.polygon([(34, 11), (19, 38), (30, 38), (27, 53), (45, 25), (33, 25)],
+                  fill="#ffffff")
+        dot = GREEN if running else RED
+        d.ellipse([43, 43, 59, 59], fill=dot, outline="#15161c", width=2)
+        return img
+
+    def _setup_tray(self):
+        if not _TRAY_OK:
+            return
+
+        def menu():
+            return pystray.Menu(
+                pystray.MenuItem("Показать", lambda: self.post(self._tray_show),
+                                 default=True),
+                pystray.MenuItem(
+                    lambda i: "Остановить обход" if zc.winws_running()
+                    else "Запустить обход",
+                    lambda: self.post(self._tray_toggle_bypass)),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Выход", lambda: self.post(self._real_quit)),
+            )
+
+        try:
+            self.tray = pystray.Icon("ZapretGUI", self._make_tray_image(False),
+                                     "Zapret GUI", menu())
+            threading.Thread(target=self.tray.run, daemon=True).start()
+        except Exception as e:
+            self.tray = None
+            self.log_msg(f"[трей] недоступен: {e}")
+
+    def _tray_show(self):
+        try:
+            self.deiconify()
+            self.after(50, self.lift)
+            self.focus_force()
+        except Exception:
+            pass
+
+    def _tray_toggle_bypass(self):
+        if zc.winws_running():
+            self.on_stop()
+        else:
+            self.on_start()
+
+    def _on_x(self):
+        # закрытие окна: свернуть в трей или выйти
+        if self.tray is not None and self.cfg.get("minimize_to_tray", True):
+            self.withdraw()
+            if not self._tray_hinted:
+                self._tray_hinted = True
+                try:
+                    self.tray.notify("Свёрнуто в трей. Обход продолжает работать. "
+                                     "Выход — через меню значка.", "Zapret GUI")
+                except Exception:
+                    pass
+            return
+        self._real_quit()
 
     def on_update_ipset(self):
         self.log_msg("Обновление ipset-all.txt…")
@@ -1151,7 +1242,7 @@ class ZapretApp(ctk.CTk):
         self.on_install_service()
 
     # -------------------------------------------------------------------- #
-    def on_close(self):
+    def _real_quit(self):
         if self.proc and self.proc.poll() is None:
             if messagebox.askyesno("Выход", "Обход запущен. Остановить при выходе?"):
                 self.active_args = None
@@ -1166,6 +1257,11 @@ class ZapretApp(ctk.CTk):
             zc.tg_proxy_stop()
         except Exception:
             pass
+        if self.tray is not None:
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
         if self._logf:
             try:
                 self._logf.close()
