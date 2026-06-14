@@ -81,6 +81,8 @@ class ZapretApp(ctk.CTk):
         self.tray = None
         self._tray_hinted = False
         self.active_args = None          # аргументы текущего запуска (для watchdog)
+        self.active_preset_name = None   # имя текущего пресета
+        self._auto_full_pass = []        # рабочие стратегии последнего поиска
         try:
             self._logf = open(zc.current_log_path(), "a", encoding="utf-8")
             self._logf.write(f"\n===== Запуск {time.strftime('%Y-%m-%d %H:%M:%S')} "
@@ -318,6 +320,7 @@ class ZapretApp(ctk.CTk):
             value={"cloudflare": "Cloudflare", "google": "Google"}.get(_doh["provider"], "Cloudflare"))
         ctk.CTkSegmentedButton(box, values=["Cloudflare", "Google"],
                                variable=self.doh_provider, font=(FONT, 12),
+                               command=self._on_doh_provider_change,
                                selected_color=ACCENT,
                                selected_hover_color=ACCENT_HOVER).pack(side="left", padx=6)
         self.doh_switch = ctk.CTkSwitch(box, text="", command=self._on_doh_toggle,
@@ -325,6 +328,14 @@ class ZapretApp(ctk.CTk):
         self.doh_switch.pack(side="left", padx=10)
         if _doh["enabled"]:
             self.doh_switch.select()
+
+        c = self._card_row(p, "🕹", "Не ломать Xbox / Microsoft",
+                           "Исключить домены Microsoft/Xbox из обхода (рекомендуется)")
+        self.xbox_switch = ctk.CTkSwitch(c, text="", command=self._on_xbox_toggle,
+                                         progress_color=ACCENT, button_color="#dfe3e8")
+        self.xbox_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
+        if zc.xbox_fix_enabled():
+            self.xbox_switch.select()
 
         c = self._card_row(p, "🌐", "IPSet-фильтр", "Текущее состояние списка IP")
         self.ipset_label = ctk.CTkLabel(c, text="…", font=(FONT, 12), text_color=MUTED)
@@ -623,6 +634,7 @@ class ZapretApp(ctk.CTk):
             messagebox.showerror("Zapret", "Не удалось разобрать аргументы пресета.")
             return
         self.active_args = args
+        self.active_preset_name = preset["name"]
         zc.enable_tcp_timestamps()
         self._on_strategy_pick()
         self.log_msg(f"--- Запуск пресета: {preset['name']} (фильтр игр: {mode}) ---")
@@ -661,6 +673,7 @@ class ZapretApp(ctk.CTk):
             zc.remove_windivert()
             self.proc = None
             self.active_args = None
+            self.active_preset_name = None
             self.log_msg("Обход остановлен.")
             self.post(self.refresh_status)
 
@@ -752,7 +765,7 @@ class ZapretApp(ctk.CTk):
                 continue
             if proc.poll() is not None:
                 self.log_msg("[watchdog] winws.exe не работает — перезапуск обхода")
-                self._watchdog_restart()
+                self._recover(switch=False)
                 fails = 0
                 continue
             res = zc.check_hosts(zc.WATCHDOG_HEALTH_HOSTS, 3.0, attempts=1)
@@ -761,8 +774,7 @@ class ZapretApp(ctk.CTk):
                 fails += 1
                 self.log_msg(f"[watchdog] цели недоступны ({fails}/{zc.WATCHDOG_FAIL_THRESHOLD})")
                 if fails >= zc.WATCHDOG_FAIL_THRESHOLD:
-                    self.log_msg("[watchdog] перезапуск обхода")
-                    self._watchdog_restart()
+                    self._recover(switch=True)
                     fails = 0
             else:
                 fails = 0
@@ -784,6 +796,50 @@ class ZapretApp(ctk.CTk):
             self.post(self.refresh_status)
         except Exception as e:
             self.log_msg(f"[watchdog] не удалось перезапустить: {e}")
+
+    def _recover(self, switch):
+        """Восстановление: переключиться на следующую рабочую стратегию из пула
+        (switch=True) либо перезапустить текущую (switch=False)."""
+        if switch:
+            pool = self.cfg.get("recovery_pool", []) or []
+            cands = [n for n in pool
+                     if n != self.active_preset_name and n in self.preset_by_name]
+            if cands:
+                self.log_msg(f"[watchdog] «{self.active_preset_name}» не работает — "
+                             f"переключаюсь на «{cands[0]}»")
+                self._switch_to(cands[0])
+                return
+            self.log_msg("[watchdog] запасных рабочих стратегий нет — перезапуск текущей")
+        self._watchdog_restart()
+
+    def _switch_to(self, name):
+        preset = self.preset_by_name.get(name)
+        if not preset:
+            self._watchdog_restart()
+            return
+        args = zc.build_args_str(preset["args"], zc.get_game_mode())
+        if not args:
+            self._watchdog_restart()
+            return
+        try:
+            if self.proc and self.proc.poll() is None:
+                try:
+                    self.proc.terminate()
+                except Exception:
+                    pass
+            zc.kill_winws_only()
+            time.sleep(1.0)
+            self.proc = zc.start_winws_logged(args)
+            self.active_args = args
+            self.active_preset_name = name
+            threading.Thread(target=self._read_output, args=(self.proc,),
+                             daemon=True).start()
+            self.cfg["strategy"] = name
+            zc.save_config(self.cfg)
+            self.post(lambda: self.strategy_var.set(name))
+            self.post(self.refresh_status)
+        except Exception as e:
+            self.log_msg(f"[watchdog] не удалось переключиться: {e}")
 
     # -- отчёт / логи ----------------------------------------------------- #
     def on_support_bundle(self):
@@ -1077,6 +1133,29 @@ class ZapretApp(ctk.CTk):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _on_doh_provider_change(self, _value=None):
+        # если DoH уже включён — сразу переключить DNS на нового провайдера
+        if not self.doh_switch.get():
+            return
+        prov = {"Cloudflare": "cloudflare", "Google": "google"}[self.doh_provider.get()]
+        self.log_msg(f"Смена DNS-провайдера на {prov}…")
+
+        def worker():
+            try:
+                zc.doh_enable(prov)
+                self.log_msg(f"DNS-провайдер изменён: {prov}.")
+            except Exception as e:
+                self.log_msg(f"[ОШИБКА] DNS: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_xbox_toggle(self):
+        en = bool(self.xbox_switch.get())
+        zc.set_xbox_fix(en)
+        self.log_msg(("Xbox/Microsoft исключены из обхода"
+                      if en else "Xbox/Microsoft больше не исключаются")
+                     + ". Перезапустите обход, чтобы применить.")
+
     def on_tg_copy(self):
         link = zc.tg_proxy_url()
         try:
@@ -1112,6 +1191,7 @@ class ZapretApp(ctk.CTk):
             return
         self.auto_total_targets = sum(len(zc.AUTO_TARGETS[s]) for s in services)
         self.auto_best = None
+        self._auto_full_pass = []
         self.auto_cancel = False
         self.auto_running = True
         for item in self.tree.get_children():
@@ -1279,6 +1359,8 @@ class ZapretApp(ctk.CTk):
                 self.auto_best = (name, total, avg_lat)
             self.btn_apply_best.configure(state="normal")
             self.btn_install_best.configure(state="normal")
+        if total == self.auto_total_targets:   # полностью рабочая — в пул запаса
+            self._auto_full_pass.append((name, avg_lat if avg_lat else 1e9))
 
     def _auto_done(self):
         self.auto_running = False
@@ -1288,6 +1370,12 @@ class ZapretApp(ctk.CTk):
         self.btn_stop.configure(state="normal")
         self.auto_bar.set(1.0)
         self.auto_phase_lbl.configure(text="готово")
+        # пул запасных рабочих стратегий (для авто-восстановления), лучшие первыми
+        pool = [n for n, _ in sorted(self._auto_full_pass, key=lambda x: x[1])]
+        self.cfg["recovery_pool"] = pool
+        zc.save_config(self.cfg)
+        if pool:
+            self.log_msg(f"В запас для авто-восстановления: {len(pool)} рабочих стратегий.")
         if self.auto_best:
             name, total, avg = self.auto_best
             self.log_msg("=== Лучшая стратегия: %s (%d/%d, ~%s мс) ==="
@@ -1374,6 +1462,11 @@ def main():
     # в режиме разработки создать presets.json из .bat, если его ещё нет
     try:
         zc.generate_presets_json()
+    except Exception:
+        pass
+    # применить фикс Xbox/Microsoft (исключение доменов из обхода)
+    try:
+        zc.ensure_xbox_fix()
     except Exception:
         pass
     try:

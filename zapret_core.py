@@ -73,7 +73,7 @@ IPSET_URL = ("https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/
              "refs/heads/main/.service/ipset-service.txt")
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.5.0"
+APP_VERSION = "2.6.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -909,23 +909,44 @@ def doh_status():
 
 def doh_enable(provider="cloudflare"):
     """Перевести системный DNS активных адаптеров на провайдера с DoH.
-    Предыдущие DNS сохраняются для восстановления."""
+    При первом включении сохраняет прежний DNS; при смене провайдера на лету
+    (когда DoH уже включён) прежний DNS НЕ перезахватывается."""
     ips, tmpl = DOH_PROVIDERS.get(provider, DOH_PROVIDERS["cloudflare"])
     ps_ips = ",".join(f"'{x}'" for x in ips)
-    script = (
+    cfg = load_config()
+    already = bool(cfg.get("doh_enabled"))
+
+    register = (
         f"$ips=@({ps_ips}); $tmpl='{tmpl}'\n"
         "foreach($ip in $ips){ try{ Add-DnsClientDohServerAddress -ServerAddress $ip "
         "-DohTemplate $tmpl -AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction Stop }"
         "catch{ try{ Set-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $tmpl "
         "-AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction SilentlyContinue }catch{} } }\n"
+    )
+
+    if already:
+        # только переустановить DNS на новый провайдер, prev не трогаем
+        script = register + (
+            "foreach($a in (Get-NetAdapter | Where-Object {$_.Status -eq 'Up'})){\n"
+            "  Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses $ips "
+            "-ErrorAction SilentlyContinue\n}\n"
+            "Clear-DnsClientCache -ErrorAction SilentlyContinue\n"
+        )
+        _ps(script)
+        cfg["doh_provider"] = provider
+        cfg["doh_enabled"] = True
+        save_config(cfg)
+        return True
+
+    # первое включение — захватить прежний DNS
+    script = register + (
         "$prev=@{}\n"
         "foreach($a in (Get-NetAdapter | Where-Object {$_.Status -eq 'Up'})){\n"
         "  $cur=(Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 "
         "-ErrorAction SilentlyContinue).ServerAddresses\n"
         "  $prev[[string]$a.ifIndex]=($cur -join ',')\n"
         "  Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses $ips "
-        "-ErrorAction SilentlyContinue\n"
-        "}\n"
+        "-ErrorAction SilentlyContinue\n}\n"
         "Clear-DnsClientCache -ErrorAction SilentlyContinue\n"
         "$prev | ConvertTo-Json -Compress"
     )
@@ -939,7 +960,6 @@ def doh_enable(provider="cloudflare"):
                 prev = {str(k): str(v) for k, v in data.items()}
     except Exception:
         prev = {}
-    cfg = load_config()
     cfg["doh_enabled"] = True
     cfg["doh_provider"] = provider
     cfg["doh_prev"] = prev
@@ -971,3 +991,52 @@ def doh_disable():
     cfg["doh_prev"] = {}
     save_config(cfg)
     return True
+
+
+# --------------------------------------------------------------------------- #
+#  Фикс Xbox / Microsoft (исключение доменов из обхода) — Фаза 4
+# --------------------------------------------------------------------------- #
+# desync ломает авторизацию Microsoft/Xbox, поэтому их домены исключаются
+# из обхода (добавляются в list-exclude-user.txt, который грузят пресеты).
+LIST_EXCLUDE_USER = os.path.join(LISTS, "list-exclude-user.txt")
+XBOX_EXCLUDE_DOMAINS = [
+    "microsoft.com", "microsoftonline.com", "live.com",
+    "xboxlive.com", "xbox.com", "skype.com",
+    "minecraft.net", "minecraftservices.com",
+]
+_EXCLUDE_PLACEHOLDER = "domain.example.abc"
+
+
+def xbox_fix_enabled():
+    return bool(load_config().get("xbox_fix", True))
+
+
+def set_xbox_fix(enabled):
+    """Добавить/убрать домены Microsoft/Xbox в list-exclude-user.txt."""
+    cfg = load_config()
+    cfg["xbox_fix"] = bool(enabled)
+    save_config(cfg)
+    try:
+        existing = []
+        if os.path.exists(LIST_EXCLUDE_USER):
+            existing = [l.strip() for l in
+                        open(LIST_EXCLUDE_USER, encoding="utf-8", errors="replace")
+                        .read().splitlines()]
+        # пользовательские строки (без наших доменов и плейсхолдера)
+        others = [l for l in existing if l and l not in XBOX_EXCLUDE_DOMAINS
+                  and l != _EXCLUDE_PLACEHOLDER]
+        lines = list(others)
+        if enabled:
+            lines += XBOX_EXCLUDE_DOMAINS
+        if not lines:
+            lines = [_EXCLUDE_PLACEHOLDER]
+        os.makedirs(LISTS, exist_ok=True)
+        with open(LIST_EXCLUDE_USER, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception:
+        pass
+
+
+def ensure_xbox_fix():
+    """Применить текущую настройку Xbox-фикса при старте (идемпотентно)."""
+    set_xbox_fix(xbox_fix_enabled())
