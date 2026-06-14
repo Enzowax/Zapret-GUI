@@ -73,7 +73,7 @@ IPSET_URL = ("https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/
              "refs/heads/main/.service/ipset-service.txt")
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.12.0"
+APP_VERSION = "2.13.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"

@@ -34,11 +34,18 @@ except Exception:
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-# Фирменная палитра Zapret GUI (фиолетовый акцент — отличается от Zapret2)
-WIN_BG = "#15161c"
-SIDEBAR_BG = "#0f1014"
-CARD_BG = "#1f2129"
-CARD_HOVER = "#272a34"
+# Палитра как пары (светлая, тёмная) — CustomTkinter сам выбирает по режиму.
+WIN_BG = ("#f2f3f7", "#15161c")
+SIDEBAR_BG = ("#e7e9f1", "#0f1014")
+CARD_BG = ("#ffffff", "#1f2129")
+CARD_HOVER = ("#e9ebf3", "#272a34")
+BTN_HOVER = ("#d8dbe6", "#343a46")     # ховер неакцентной кнопки
+SWITCH_KNOB = ("#ffffff", "#dfe3e8")
+LOG_BG = ("#ffffff", "#101218")
+LOG_FG = ("#1a1c22", "#d7dbe0")
+TEXT = ("#1a1c22", "#e9eaf0")
+MUTED = ("#6b7280", "#8a909b")
+
 ACCENT = "#7c5cff"
 ACCENT_HOVER = "#6a4ae6"
 
@@ -51,13 +58,19 @@ THEMES = {
     "Янтарная":   ("#e0a52b", "#c98f1f"),
     "Розовая":    ("#e0559b", "#c9468a"),
 }
+APPEARANCE = {"Тёмная": "dark", "Светлая": "light", "Системная": "system"}
 
 GREEN = "#3ad07a"
 RED = "#e0575b"
 YELLOW = "#e0b13a"
-MUTED = "#8a909b"
-TEXT = "#e9eaf0"
 FONT = "Segoe UI"
+
+
+def _pick(c):
+    """Вернуть одиночный цвет из пары (светлая, тёмная) по текущему режиму ctk."""
+    if isinstance(c, (tuple, list)):
+        return c[1] if ctk.get_appearance_mode() == "Dark" else c[0]
+    return c
 
 APP_NAME = "Zapret GUI"
 
@@ -75,7 +88,8 @@ class ZapretApp(ctk.CTk):
             pass
 
         self.cfg = zc.load_config()
-        # тема оформления — задать акцент до построения интерфейса
+        # оформление — задать режим (тёмная/светлая) и акцент до построения UI
+        ctk.set_appearance_mode(self.cfg.get("appearance", "dark"))
         global ACCENT, ACCENT_HOVER
         _theme = self.cfg.get("accent_name", "Фиолетовая")
         if _theme in THEMES:
@@ -135,10 +149,11 @@ class ZapretApp(ctk.CTk):
             style.theme_use("clam")
         except Exception:
             pass
-        style.configure("Zap.Treeview", background=CARD_BG, fieldbackground=CARD_BG,
-                        foreground=TEXT, rowheight=28, borderwidth=0)
-        style.configure("Zap.Treeview.Heading", background=SIDEBAR_BG,
-                        foreground=MUTED, borderwidth=0, relief="flat")
+        style.configure("Zap.Treeview", background=_pick(CARD_BG),
+                        fieldbackground=_pick(CARD_BG), foreground=_pick(TEXT),
+                        rowheight=28, borderwidth=0)
+        style.configure("Zap.Treeview.Heading", background=_pick(SIDEBAR_BG),
+                        foreground=_pick(MUTED), borderwidth=0, relief="flat")
         style.map("Zap.Treeview", background=[("selected", ACCENT)])
 
     # -- каркас ----------------------------------------------------------- #
@@ -156,7 +171,8 @@ class ZapretApp(ctk.CTk):
                      text_color=MUTED, anchor="w").pack(fill="x", padx=16, pady=(0, 18))
 
         for key, label in [("control", "🛡   Управление"), ("auto", "🔍   Авто-поиск"),
-                           ("tgws", "✈   Telegram"), ("log", "📜   Журнал")]:
+                           ("tgws", "✈   Telegram"), ("settings", "⚙   Настройки"),
+                           ("log", "📜   Журнал")]:
             b = ctk.CTkButton(side, text=label, anchor="w", height=42, corner_radius=8,
                               fg_color="transparent", hover_color=CARD_HOVER,
                               text_color=TEXT, font=(FONT, 14),
@@ -180,6 +196,7 @@ class ZapretApp(ctk.CTk):
         self.pages["control"] = self._build_control_page()
         self.pages["auto"] = self._build_auto_page()
         self.pages["tgws"] = self._build_tgws_page()
+        self.pages["settings"] = self._build_settings_page()
         self.pages["log"] = self._build_log_page()
 
     def _show_page(self, key):
@@ -227,7 +244,7 @@ class ZapretApp(ctk.CTk):
             parent, text=text, command=command, width=width, height=36,
             corner_radius=8, font=(FONT, 13),
             fg_color=ACCENT if accent else CARD_HOVER,
-            hover_color=ACCENT_HOVER if accent else "#343a46",
+            hover_color=ACCENT_HOVER if accent else BTN_HOVER,
             text_color="#ffffff" if accent else TEXT)
 
     # -- страница: Управление --------------------------------------------- #
@@ -288,7 +305,7 @@ class ZapretApp(ctk.CTk):
                   width=120).pack(side="left", padx=4)
         self._btn(box, "Удалить", self.on_remove_service, width=110).pack(side="left", padx=4)
 
-        self._section(p, "Настройки")
+        self._section(p, "Параметры обхода")
         c = self._card_row(p, "🎮", "Игровой фильтр", "Расширяет диапазон портов для игр")
         self.game_seg = ctk.CTkSegmentedButton(
             c, values=["Выкл", "TCP+UDP", "TCP", "UDP"], command=self._on_game_seg,
@@ -297,17 +314,10 @@ class ZapretApp(ctk.CTk):
         self.game_seg.set({"off": "Выкл", "all": "TCP+UDP", "tcp": "TCP",
                            "udp": "UDP"}[zc.get_game_mode()])
 
-        c = self._card_row(p, "🔄", "Проверять обновления", "Уведомлять о новых версиях")
-        self.update_switch = ctk.CTkSwitch(c, text="", command=self._on_update_toggle,
-                                           progress_color=ACCENT, button_color="#dfe3e8")
-        self.update_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
-        if zc.get_update_enabled():
-            self.update_switch.select()
-
         c = self._card_row(p, "🚀", "Автозапуск обхода",
                            "Запускать обход при старте приложения")
         self.autostart_switch = ctk.CTkSwitch(c, text="", command=self._on_autostart_toggle,
-                                              progress_color=ACCENT, button_color="#dfe3e8")
+                                              progress_color=ACCENT, button_color=SWITCH_KNOB)
         self.autostart_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
         if self.cfg.get("autostart_bypass"):
             self.autostart_switch.select()
@@ -315,18 +325,10 @@ class ZapretApp(ctk.CTk):
         c = self._card_row(p, "🩺", "Авто-восстановление",
                            "Перезапускать обход, если он упал или перестал работать")
         self.recovery_switch = ctk.CTkSwitch(c, text="", command=self._on_recovery_toggle,
-                                             progress_color=ACCENT, button_color="#dfe3e8")
+                                             progress_color=ACCENT, button_color=SWITCH_KNOB)
         self.recovery_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
         if self.cfg.get("auto_recovery"):
             self.recovery_switch.select()
-
-        c = self._card_row(p, "📥", "Сворачивать в трей",
-                           "При закрытии окна прятать в трей (обход продолжит работать)")
-        self.tray_switch = ctk.CTkSwitch(c, text="", command=self._on_tray_toggle,
-                                         progress_color=ACCENT, button_color="#dfe3e8")
-        self.tray_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
-        if self.cfg.get("minimize_to_tray", True):
-            self.tray_switch.select()
 
         c = self._card_row(p, "🔒", "Шифрованный DNS (DoH)",
                            "Системный DNS через DoH (часть блокировок — по DNS)")
@@ -341,39 +343,16 @@ class ZapretApp(ctk.CTk):
                                selected_color=ACCENT,
                                selected_hover_color=ACCENT_HOVER).pack(side="left", padx=6)
         self.doh_switch = ctk.CTkSwitch(box, text="", command=self._on_doh_toggle,
-                                        progress_color=ACCENT, button_color="#dfe3e8")
+                                        progress_color=ACCENT, button_color=SWITCH_KNOB)
         self.doh_switch.pack(side="left", padx=10)
         if _doh["enabled"]:
             self.doh_switch.select()
-
-        c = self._card_row(p, "🎨", "Тема (акцент)", "Цвет оформления приложения")
-        self.theme_var = ctk.StringVar(value=self.cfg.get("accent_name", "Фиолетовая"))
-        ctk.CTkOptionMenu(c, values=list(THEMES.keys()), variable=self.theme_var,
-                          command=self._on_theme_change, width=160, height=36,
-                          font=(FONT, 13), corner_radius=8, fg_color=CARD_HOVER,
-                          button_color=ACCENT, button_hover_color=ACCENT_HOVER).grid(
-            row=0, column=2, rowspan=2, padx=14, pady=12)
-
-        c = self._card_row(p, "🛡", "Антивирус (Defender)",
-                           "Добавить папку в исключения — меньше ложных срабатываний")
-        self._btn(c, "Добавить в исключения", self.on_add_defender_exclusion,
-                  accent=True, width=200).grid(row=0, column=2, rowspan=2, padx=14, pady=12)
 
         c = self._card_row(p, "🌐", "IPSet-фильтр", "Текущее состояние списка IP")
         self.ipset_label = ctk.CTkLabel(c, text="…", font=(FONT, 12), text_color=MUTED)
         self.ipset_label.grid(row=0, column=2, rowspan=2, padx=(0, 8), pady=12, sticky="e")
         self._btn(c, "Обновить", self.on_update_ipset, width=110).grid(
             row=0, column=3, rowspan=2, padx=14, pady=12)
-
-        self._section(p, "Обновление приложения")
-        c = self._card_row(p, "⬆", f"Версия {zc.APP_VERSION}",
-                           "Проверить и установить новую версию с GitHub")
-        box = ctk.CTkFrame(c, fg_color="transparent")
-        box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
-        self.upd_label = ctk.CTkLabel(box, text="", font=(FONT, 11), text_color=MUTED)
-        self.upd_label.pack(side="left", padx=(0, 8))
-        self._btn(box, "Проверить", self.on_check_update, accent=True,
-                  width=120).pack(side="left", padx=4)
 
         self._section(p, "Инструменты")
         c = self._card(p)
@@ -519,6 +498,66 @@ class ZapretApp(ctk.CTk):
         self._btn(box, "Сменить секрет", self.on_tg_regen, width=150).pack(side="left", padx=4)
         return p
 
+    # -- страница: Настройки приложения ----------------------------------- #
+    def _build_settings_page(self):
+        p = self._page()
+        self._title(p, "Настройки приложения",
+                    "Параметры самого приложения: обновления, оформление, трей, антивирус.")
+
+        self._section(p, "Обновления")
+        c = self._card_row(p, "⬆", f"Версия {zc.APP_VERSION}",
+                           "Проверить и установить новую версию с GitHub")
+        box = ctk.CTkFrame(c, fg_color="transparent")
+        box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
+        self.upd_label = ctk.CTkLabel(box, text="", font=(FONT, 11), text_color=MUTED)
+        self.upd_label.pack(side="left", padx=(0, 8))
+        self._btn(box, "Проверить", self.on_check_update, accent=True,
+                  width=120).pack(side="left", padx=4)
+
+        c = self._card_row(p, "🔄", "Автопроверка обновлений",
+                           "Проверять новые версии при запуске")
+        self.update_switch = ctk.CTkSwitch(c, text="", command=self._on_update_toggle,
+                                           progress_color=ACCENT, button_color=SWITCH_KNOB)
+        self.update_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
+        if zc.get_update_enabled():
+            self.update_switch.select()
+
+        self._section(p, "Оформление")
+        c = self._card_row(p, "🌗", "Тема", "Тёмная / светлая / системная")
+        self.appearance_var = ctk.StringVar(
+            value={v: k for k, v in APPEARANCE.items()}.get(
+                self.cfg.get("appearance", "dark"), "Тёмная"))
+        ctk.CTkSegmentedButton(c, values=list(APPEARANCE.keys()),
+                               variable=self.appearance_var, font=(FONT, 12),
+                               command=self._on_appearance_change,
+                               selected_color=ACCENT,
+                               selected_hover_color=ACCENT_HOVER).grid(
+            row=0, column=2, rowspan=2, padx=14, pady=12)
+
+        c = self._card_row(p, "🎨", "Акцентный цвет", "Цвет кнопок и выделения")
+        self.theme_var = ctk.StringVar(value=self.cfg.get("accent_name", "Фиолетовая"))
+        ctk.CTkOptionMenu(c, values=list(THEMES.keys()), variable=self.theme_var,
+                          command=self._on_theme_change, width=160, height=36,
+                          font=(FONT, 13), corner_radius=8, fg_color=CARD_HOVER,
+                          button_color=ACCENT, button_hover_color=ACCENT_HOVER).grid(
+            row=0, column=2, rowspan=2, padx=14, pady=12)
+
+        self._section(p, "Поведение")
+        c = self._card_row(p, "📥", "Сворачивать в трей",
+                           "При закрытии окна прятать в трей (обход продолжит работать)")
+        self.tray_switch = ctk.CTkSwitch(c, text="", command=self._on_tray_toggle,
+                                         progress_color=ACCENT, button_color=SWITCH_KNOB)
+        self.tray_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
+        if self.cfg.get("minimize_to_tray", True):
+            self.tray_switch.select()
+
+        self._section(p, "Антивирус")
+        c = self._card_row(p, "🛡", "Windows Defender",
+                           "Добавить папку в исключения — меньше ложных срабатываний AV")
+        self._btn(c, "Добавить в исключения", self.on_add_defender_exclusion,
+                  accent=True, width=200).grid(row=0, column=2, rowspan=2, padx=14, pady=12)
+        return p
+
     # -- страница: Журнал ------------------------------------------------- #
     def _build_log_page(self):
         p = ctk.CTkFrame(self.container, fg_color=WIN_BG)
@@ -526,8 +565,8 @@ class ZapretApp(ctk.CTk):
         p.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(p, text="Журнал", font=(FONT, 24, "bold"), text_color=TEXT,
                      anchor="w").grid(row=0, column=0, sticky="w", padx=16, pady=(12, 6))
-        self.logbox = ctk.CTkTextbox(p, font=("Consolas", 12), fg_color="#101218",
-                                     text_color="#d7dbe0", wrap="word")
+        self.logbox = ctk.CTkTextbox(p, font=("Consolas", 12), fg_color=LOG_BG,
+                                     text_color=LOG_FG, wrap="word")
         self.logbox.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 8))
         self.logbox.configure(state="disabled")
         self._btn(p, "Очистить журнал", self.clear_log, width=160).grid(
@@ -936,6 +975,14 @@ class ZapretApp(ctk.CTk):
             os.startfile(zc.LOGS)
         except Exception as e:
             self.log_msg(str(e))
+
+    def _on_appearance_change(self, value):
+        mode = APPEARANCE.get(value, "dark")
+        self.cfg["appearance"] = mode
+        zc.save_config(self.cfg)
+        ctk.set_appearance_mode(mode)
+        self._init_ttk_style()   # перенастроить цвета таблицы под новый режим
+        self.log_msg(f"Тема: {value.lower()}.")
 
     def _on_theme_change(self, value):
         self.cfg["accent_name"] = value
