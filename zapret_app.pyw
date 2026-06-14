@@ -11,7 +11,9 @@ Discord, YouTube и Telegram.
 
 import os
 import sys
+import time
 import queue
+import ctypes
 import threading
 
 import tkinter as tk
@@ -62,6 +64,17 @@ class ZapretApp(ctk.CTk):
         self.auto_best = None
         self.auto_total_targets = 0
 
+        # Фаза 3: авто-восстановление / логи / завершение
+        self._closing = False
+        self.active_args = None          # аргументы текущего запуска (для watchdog)
+        try:
+            self._logf = open(zc.current_log_path(), "a", encoding="utf-8")
+            self._logf.write(f"\n===== Запуск {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                             f"(v{zc.APP_VERSION}) =====\n")
+            self._logf.flush()
+        except Exception:
+            self._logf = None
+
         self.pages = {}
         self.nav_buttons = {}
 
@@ -73,6 +86,9 @@ class ZapretApp(ctk.CTk):
         self.refresh_status()
         self.after(3000, self._auto_refresh)
         self.after(1500, self._startup_update_check)
+        threading.Thread(target=self._watchdog_loop, daemon=True).start()
+        if self.cfg.get("autostart_bypass"):
+            self.after(1400, self._autostart_bypass)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def _init_ttk_style(self):
@@ -250,6 +266,22 @@ class ZapretApp(ctk.CTk):
         if zc.get_update_enabled():
             self.update_switch.select()
 
+        c = self._card_row(p, "🚀", "Автозапуск обхода",
+                           "Запускать обход при старте приложения")
+        self.autostart_switch = ctk.CTkSwitch(c, text="", command=self._on_autostart_toggle,
+                                              progress_color=ACCENT, button_color="#dfe3e8")
+        self.autostart_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
+        if self.cfg.get("autostart_bypass"):
+            self.autostart_switch.select()
+
+        c = self._card_row(p, "🩺", "Авто-восстановление",
+                           "Перезапускать обход, если он упал или перестал работать")
+        self.recovery_switch = ctk.CTkSwitch(c, text="", command=self._on_recovery_toggle,
+                                             progress_color=ACCENT, button_color="#dfe3e8")
+        self.recovery_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
+        if self.cfg.get("auto_recovery"):
+            self.recovery_switch.select()
+
         c = self._card_row(p, "🌐", "IPSet-фильтр", "Текущее состояние списка IP")
         self.ipset_label = ctk.CTkLabel(c, text="…", font=(FONT, 12), text_color=MUTED)
         self.ipset_label.grid(row=0, column=2, rowspan=2, padx=(0, 8), pady=12, sticky="e")
@@ -272,6 +304,9 @@ class ZapretApp(ctk.CTk):
         box.grid(row=0, column=0, columnspan=3, padx=12, pady=12, sticky="w")
         self._btn(box, "Диагностика", self.on_diagnostics).pack(side="left", padx=4)
         self._btn(box, "Тест соединения", self.on_test).pack(side="left", padx=4)
+        self._btn(box, "Сохранить отчёт", self.on_support_bundle, width=160).pack(
+            side="left", padx=4)
+        self._btn(box, "Папка логов", self.on_open_logs, width=130).pack(side="left", padx=4)
         return p
 
     # -- страница: Авто-поиск --------------------------------------------- #
@@ -412,6 +447,12 @@ class ZapretApp(ctk.CTk):
                 self.logbox.insert("end", line.rstrip() + "\n")
                 self.logbox.see("end")
                 self.logbox.configure(state="disabled")
+                if self._logf:
+                    try:
+                        self._logf.write(time.strftime("%H:%M:%S ") + line.rstrip() + "\n")
+                        self._logf.flush()
+                    except Exception:
+                        pass
         except queue.Empty:
             pass
         try:
@@ -509,6 +550,7 @@ class ZapretApp(ctk.CTk):
         if not args:
             messagebox.showerror("Zapret", "Не удалось разобрать аргументы пресета.")
             return
+        self.active_args = args
         zc.enable_tcp_timestamps()
         self._on_strategy_pick()
         self.log_msg(f"--- Запуск пресета: {preset['name']} (фильтр игр: {mode}) ---")
@@ -546,6 +588,7 @@ class ZapretApp(ctk.CTk):
             zc.kill_winws_only()
             zc.remove_windivert()
             self.proc = None
+            self.active_args = None
             self.log_msg("Обход остановлен.")
             self.post(self.refresh_status)
 
@@ -600,6 +643,99 @@ class ZapretApp(ctk.CTk):
         en = bool(self.update_switch.get())
         zc.set_update_enabled(en)
         self.log_msg("Проверка обновлений: " + ("включена" if en else "выключена"))
+
+    def _on_autostart_toggle(self):
+        self.cfg["autostart_bypass"] = bool(self.autostart_switch.get())
+        zc.save_config(self.cfg)
+        self.log_msg("Автозапуск обхода: "
+                     + ("включён" if self.cfg["autostart_bypass"] else "выключен"))
+
+    def _on_recovery_toggle(self):
+        self.cfg["auto_recovery"] = bool(self.recovery_switch.get())
+        zc.save_config(self.cfg)
+        self.log_msg("Авто-восстановление: "
+                     + ("включено" if self.cfg["auto_recovery"] else "выключено"))
+
+    # -- авто-восстановление (watchdog) ----------------------------------- #
+    def _autostart_bypass(self):
+        if not zc.winws_running() and not zc.service_running():
+            self.log_msg("Автозапуск обхода…")
+            self.on_start()
+
+    def _watchdog_loop(self):
+        fails = 0
+        while not self._closing:
+            for _ in range(int(zc.WATCHDOG_INTERVAL * 4)):
+                if self._closing:
+                    return
+                time.sleep(0.25)
+            if self._closing:
+                return
+            if not self.cfg.get("auto_recovery") or self.auto_running:
+                fails = 0
+                continue
+            proc = self.proc
+            if proc is None:
+                fails = 0
+                continue
+            if proc.poll() is not None:
+                self.log_msg("[watchdog] winws.exe не работает — перезапуск обхода")
+                self._watchdog_restart()
+                fails = 0
+                continue
+            res = zc.check_hosts(zc.WATCHDOG_HEALTH_HOSTS, 3.0, attempts=1)
+            ok = sum(1 for h in zc.WATCHDOG_HEALTH_HOSTS if res[h][0])
+            if ok == 0:
+                fails += 1
+                self.log_msg(f"[watchdog] цели недоступны ({fails}/{zc.WATCHDOG_FAIL_THRESHOLD})")
+                if fails >= zc.WATCHDOG_FAIL_THRESHOLD:
+                    self.log_msg("[watchdog] перезапуск обхода")
+                    self._watchdog_restart()
+                    fails = 0
+            else:
+                fails = 0
+
+    def _watchdog_restart(self):
+        if not self.active_args:
+            return
+        try:
+            if self.proc and self.proc.poll() is None:
+                try:
+                    self.proc.terminate()
+                except Exception:
+                    pass
+            zc.kill_winws_only()
+            time.sleep(1.0)
+            self.proc = zc.start_winws_logged(self.active_args)
+            threading.Thread(target=self._read_output, args=(self.proc,),
+                             daemon=True).start()
+            self.post(self.refresh_status)
+        except Exception as e:
+            self.log_msg(f"[watchdog] не удалось перезапустить: {e}")
+
+    # -- отчёт / логи ----------------------------------------------------- #
+    def on_support_bundle(self):
+        self.log_msg("Сбор отчёта поддержки…")
+
+        def worker():
+            try:
+                path = zc.make_support_bundle()
+                self.log_msg(f"Отчёт сохранён: {path}")
+                try:
+                    os.startfile(os.path.dirname(path))
+                except Exception:
+                    pass
+            except Exception as e:
+                self.log_msg(f"[ОШИБКА] отчёт: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_open_logs(self):
+        try:
+            os.makedirs(zc.LOGS, exist_ok=True)
+            os.startfile(zc.LOGS)
+        except Exception as e:
+            self.log_msg(str(e))
 
     def on_update_ipset(self):
         self.log_msg("Обновление ipset-all.txt…")
@@ -992,18 +1128,38 @@ class ZapretApp(ctk.CTk):
     def on_close(self):
         if self.proc and self.proc.poll() is None:
             if messagebox.askyesno("Выход", "Обход запущен. Остановить при выходе?"):
+                self.active_args = None
                 try:
                     self.proc.terminate()
                 except Exception:
                     pass
                 zc.kill_winws_only()
                 zc.remove_windivert()
+        self._closing = True
+        if self._logf:
+            try:
+                self._logf.close()
+            except Exception:
+                pass
         self.destroy()
+
+
+_SINGLETON = None
 
 
 def main():
     if not zc.is_admin():
         zc.relaunch_as_admin()
+        return
+    # single-instance: не запускать вторую копию
+    global _SINGLETON
+    _SINGLETON = zc.acquire_single_instance()
+    if _SINGLETON is None:
+        try:
+            ctypes.windll.user32.MessageBoxW(
+                0, "Zapret GUI уже запущен.", "Zapret GUI", 0x40)
+        except Exception:
+            pass
         return
     # развернуть и проверить встроенные файлы (только для собранного .exe)
     copied = []

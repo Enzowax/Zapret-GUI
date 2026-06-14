@@ -17,4 +17,5 @@ utils/app_config.json
 utils/gui_config.json
 utils/*.enabled
 lists/*.backup
+logs/
 .write_test.tmp

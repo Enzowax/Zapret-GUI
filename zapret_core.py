@@ -20,6 +20,7 @@ import shutil
 import socket
 import ctypes
 import hashlib
+import zipfile
 import asyncio
 import subprocess
 import urllib.request
@@ -71,7 +72,7 @@ IPSET_URL = ("https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/
              "refs/heads/main/.service/ipset-service.txt")
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -95,6 +96,11 @@ QUICK_WAIT = 2.0
 QUICK_TIMEOUT = 2.0
 FULL_WAIT = 3.5
 FULL_TIMEOUT = 3.0
+
+# авто-восстановление (watchdog)
+WATCHDOG_INTERVAL = 45          # сек между проверками
+WATCHDOG_HEALTH_HOSTS = ["discord.com", "www.youtube.com"]
+WATCHDOG_FAIL_THRESHOLD = 2     # подряд неудачных проверок до перезапуска
 
 TGWS_EXE_NAME = "TgWsProxy_windows.exe"
 
@@ -748,3 +754,58 @@ def tgws_start(path):
 
 def tgws_stop():
     run_hidden(["taskkill", "/IM", TGWS_EXE_NAME, "/F"])
+
+
+# --------------------------------------------------------------------------- #
+#  Логи, single-instance, отчёт поддержки (Фаза 3)
+# --------------------------------------------------------------------------- #
+def current_log_path():
+    os.makedirs(LOGS, exist_ok=True)
+    return os.path.join(LOGS, f"zapret_{time.strftime('%Y-%m-%d')}.txt")
+
+
+def acquire_single_instance(name="ZapretGUI_singleton_mutex"):
+    """Создать именованный мьютекс. None — если копия уже запущена."""
+    try:
+        h = ctypes.windll.kernel32.CreateMutexW(None, False, name)
+        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            return None
+        return h
+    except Exception:
+        return 1  # не смогли проверить — разрешаем запуск
+
+
+def make_support_bundle():
+    """Собрать zip с диагностикой и логами для поддержки. -> путь."""
+    os.makedirs(LOGS, exist_ok=True)
+    path = os.path.join(LOGS, f"support_{time.strftime('%Y%m%d_%H%M%S')}.zip")
+    diag = [
+        f"app_version = {APP_VERSION}",
+        f"frozen      = {getattr(sys, 'frozen', False)}",
+        f"base        = {BASE}",
+        f"admin       = {is_admin()}",
+        f"winws_run   = {winws_running()}",
+        f"service     = installed={service_installed()} running={service_running()}",
+        f"tgws_run    = {tgws_running()}",
+        "",
+        "diagnostics:",
+    ]
+    try:
+        for ok, text in run_diagnostics():
+            diag.append(("  [OK] " if ok else "  [!]  ") + text)
+    except Exception as e:
+        diag.append(f"  diagnostics error: {e}")
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("diagnostics.txt", "\n".join(diag))
+        if os.path.isdir(LOGS):
+            for name in os.listdir(LOGS):
+                if name.endswith(".txt"):
+                    try:
+                        z.write(os.path.join(LOGS, name), f"logs/{name}")
+                    except Exception:
+                        pass
+        try:
+            z.write(CONFIG_FILE, "app_config.json")
+        except Exception:
+            pass
+    return path
