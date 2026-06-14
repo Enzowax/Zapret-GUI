@@ -73,7 +73,7 @@ IPSET_URL = ("https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/
              "refs/heads/main/.service/ipset-service.txt")
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.9.0"
+APP_VERSION = "2.10.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -1079,3 +1079,64 @@ def cleanup_xbox_legacy():
             save_config(cfg)
     except Exception:
         pass
+
+
+# --------------------------------------------------------------------------- #
+#  Антивирус (исключения Windows Defender) и перезапуск — Фаза 5
+# --------------------------------------------------------------------------- #
+def defender_exclusion_exists(path=None):
+    path = path or BASE
+    try:
+        out = _ps(f"if((Get-MpPreference).ExclusionPath -contains '{path}')"
+                  "{'YES'}else{'NO'}").stdout.strip()
+        return out == "YES"
+    except Exception:
+        return False
+
+
+def add_defender_exclusion(path=None):
+    """Добавить папку и winws.exe в исключения Windows Defender (-> (ok, msg))."""
+    path = path or BASE
+    try:
+        out = _ps(
+            "try{"
+            f"Add-MpPreference -ExclusionPath '{path}' -ErrorAction Stop;"
+            f"Add-MpPreference -ExclusionProcess 'winws.exe' -ErrorAction SilentlyContinue;"
+            "'OK'}catch{'FAIL:'+$_.Exception.Message}").stdout.strip()
+        if out.startswith("OK"):
+            return True, "папка и winws.exe добавлены в исключения Defender"
+        return False, out.replace("FAIL:", "") or "не удалось (Defender отключён?)"
+    except Exception as e:
+        return False, str(e)
+
+
+def remove_defender_exclusion(path=None):
+    path = path or BASE
+    try:
+        _ps(f"Remove-MpPreference -ExclusionPath '{path}' -ErrorAction SilentlyContinue;"
+            "Remove-MpPreference -ExclusionProcess 'winws.exe' -ErrorAction SilentlyContinue")
+        return True
+    except Exception:
+        return False
+
+
+def relaunch_app():
+    """Перезапустить приложение (через .bat-хелпер: ждёт выхода и стартует заново)."""
+    pid = os.getpid()
+    if getattr(sys, "frozen", False):
+        target = f'"{sys.executable}"'
+    else:
+        target = f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
+    bat = os.path.join(os.environ.get("TEMP", BASE), "zapret_relaunch.bat")
+    script = (
+        "@echo off\r\n"
+        ":wait\r\n"
+        f'tasklist /FI "PID eq {pid}" | find "{pid}" >nul\r\n'
+        "if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto wait )\r\n"
+        f'start "" {target}\r\n'
+        'del "%~f0"\r\n'
+    )
+    with open(bat, "w", encoding="utf-8") as f:
+        f.write(script)
+    subprocess.Popen(["cmd", "/c", bat], creationflags=CREATE_NO_WINDOW,
+                     startupinfo=_startupinfo())

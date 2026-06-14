@@ -41,6 +41,17 @@ CARD_BG = "#1f2129"
 CARD_HOVER = "#272a34"
 ACCENT = "#7c5cff"
 ACCENT_HOVER = "#6a4ae6"
+
+# темы оформления (акцентный цвет, hover)
+THEMES = {
+    "Фиолетовая": ("#7c5cff", "#6a4ae6"),
+    "Синяя":      ("#2f80ed", "#256fd1"),
+    "Бирюзовая":  ("#1f9ec9", "#1b87aa"),
+    "Зелёная":    ("#27ae60", "#1f9551"),
+    "Янтарная":   ("#e0a52b", "#c98f1f"),
+    "Розовая":    ("#e0559b", "#c9468a"),
+}
+
 GREEN = "#3ad07a"
 RED = "#e0575b"
 YELLOW = "#e0b13a"
@@ -64,6 +75,11 @@ class ZapretApp(ctk.CTk):
             pass
 
         self.cfg = zc.load_config()
+        # тема оформления — задать акцент до построения интерфейса
+        global ACCENT, ACCENT_HOVER
+        _theme = self.cfg.get("accent_name", "Фиолетовая")
+        if _theme in THEMES:
+            ACCENT, ACCENT_HOVER = THEMES[_theme]
         self.presets = zc.load_presets()
         self.preset_by_name = {p["name"]: p for p in self.presets}
         self.proc = None
@@ -330,6 +346,18 @@ class ZapretApp(ctk.CTk):
         if _doh["enabled"]:
             self.doh_switch.select()
 
+        c = self._card_row(p, "🎨", "Тема (акцент)", "Цвет оформления приложения")
+        self.theme_var = ctk.StringVar(value=self.cfg.get("accent_name", "Фиолетовая"))
+        ctk.CTkOptionMenu(c, values=list(THEMES.keys()), variable=self.theme_var,
+                          command=self._on_theme_change, width=160, height=36,
+                          font=(FONT, 13), corner_radius=8, fg_color=CARD_HOVER,
+                          button_color=ACCENT, button_hover_color=ACCENT_HOVER).grid(
+            row=0, column=2, rowspan=2, padx=14, pady=12)
+
+        c = self._card_row(p, "🛡", "Антивирус (Defender)",
+                           "Добавить папку в исключения — меньше ложных срабатываний")
+        self._btn(c, "Добавить в исключения", self.on_add_defender_exclusion,
+                  accent=True, width=200).grid(row=0, column=2, rowspan=2, padx=14, pady=12)
 
         c = self._card_row(p, "🌐", "IPSet-фильтр", "Текущее состояние списка IP")
         self.ipset_label = ctk.CTkLabel(c, text="…", font=(FONT, 12), text_color=MUTED)
@@ -908,6 +936,27 @@ class ZapretApp(ctk.CTk):
             os.startfile(zc.LOGS)
         except Exception as e:
             self.log_msg(str(e))
+
+    def _on_theme_change(self, value):
+        self.cfg["accent_name"] = value
+        zc.save_config(self.cfg)
+        if messagebox.askyesno("Тема", f"Тема «{value}» применится после перезапуска.\n"
+                               "Перезапустить приложение сейчас?"):
+            try:
+                zc.relaunch_app()
+            except Exception as e:
+                self.log_msg(f"[ОШИБКА] перезапуск: {e}")
+                return
+            self.after(300, self._real_quit)
+
+    def on_add_defender_exclusion(self):
+        self.log_msg("Добавляю папку в исключения Windows Defender…")
+
+        def worker():
+            ok, msg = zc.add_defender_exclusion(zc.BASE)
+            self.log_msg(("Defender: " if ok else "[!] Defender: ") + msg)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def on_export_settings(self):
         path = filedialog.asksaveasfilename(
