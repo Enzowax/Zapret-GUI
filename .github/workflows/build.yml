@@ -23,7 +23,9 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install customtkinter==5.2.2 pyinstaller pystray pillow darkdetect
+        # cryptography обязателен: его использует встроенный TG-прокси (tgproxy/_aes.py);
+        # без него на Windows прокси не запускается (fallback рассчитан на libcrypto.so)
+        run: pip install customtkinter==5.2.2 pyinstaller pystray pillow darkdetect cryptography
 
       - name: Build (onedir)
         run: pyinstaller --noconfirm --distpath dist --workpath build ZapretControl.spec

@@ -51,15 +51,18 @@ if not os.path.exists(ICON_FILE):
 ctk_datas, ctk_binaries, ctk_hidden = collect_all("customtkinter")
 pil_datas, pil_binaries, pil_hidden = collect_all("PIL")
 pystray_datas, pystray_binaries, pystray_hidden = collect_all("pystray")
-datas += ctk_datas + pil_datas + pystray_datas
+# cryptography нужен встроенному TG-прокси (tgproxy/_aes.py) на Windows
+crypto_datas, crypto_binaries, crypto_hidden = collect_all("cryptography")
+datas += ctk_datas + pil_datas + pystray_datas + crypto_datas
 
 a = Analysis(
     ["zapret_app.pyw"],
     pathex=[ROOT],
-    binaries=ctk_binaries + pil_binaries + pystray_binaries,
+    binaries=ctk_binaries + pil_binaries + pystray_binaries + crypto_binaries,
     datas=datas,
-    hiddenimports=(ctk_hidden + pil_hidden + pystray_hidden
-                   + ["darkdetect", "zapret_core"]
+    hiddenimports=(ctk_hidden + pil_hidden + pystray_hidden + crypto_hidden
+                   + ["darkdetect", "zapret_core",
+                      "cryptography.hazmat.primitives.ciphers"]
                    + collect_submodules("tgproxy")
                    + ["tgproxy", "tgproxy.tg_ws_proxy", "tgproxy.config",
                       "tgproxy.bridge", "tgproxy.raw_websocket", "tgproxy.pool",
