@@ -72,7 +72,7 @@ IPSET_URL = ("https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/
              "refs/heads/main/.service/ipset-service.txt")
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.2.1"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -614,23 +614,24 @@ def check_update(timeout=10):
             data = json.loads(r.read().decode("utf-8", "replace"))
         latest = (data.get("tag_name") or "").strip()
         notes = data.get("body") or ""
-        url = ""
+        url, size = "", 0
         for a in data.get("assets", []):
-            if (a.get("name", "").lower().endswith(".exe")):
+            if a.get("name", "").lower().endswith(".zip"):
                 url = a.get("browser_download_url", "")
+                size = int(a.get("size") or 0)
                 break
         available = bool(latest) and _version_tuple(latest) > _version_tuple(APP_VERSION)
         return {"available": available, "current": APP_VERSION,
-                "latest": latest or "?", "url": url, "notes": notes}
+                "latest": latest or "?", "url": url, "size": size, "notes": notes}
     except Exception as e:
         return {"error": str(e)}
 
 
-def download_update(url, dest, progress_cb=None, timeout=120):
-    """Скачать файл обновления. progress_cb(frac) — опционально."""
+def download_update(url, dest, progress_cb=None, timeout=180, expected_size=0):
+    """Скачать архив обновления с проверкой целостности по размеру."""
     req = urllib.request.Request(url, headers={"User-Agent": "ZapretGUI"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        total = int(r.headers.get("Content-Length") or 0)
+        total = int(r.headers.get("Content-Length") or expected_size or 0)
         got = 0
         with open(dest, "wb") as f:
             while True:
@@ -641,28 +642,44 @@ def download_update(url, dest, progress_cb=None, timeout=120):
                 got += len(chunk)
                 if progress_cb and total:
                     progress_cb(got / total)
+    if expected_size and os.path.getsize(dest) != expected_size:
+        raise RuntimeError("Размер загрузки не совпал — повреждённый файл")
     return dest
 
 
-def apply_update(new_exe):
-    """Заменить текущий exe скачанным и перезапуститься (через .bat-хелпер).
-    Доступно только в собранном .exe."""
+def apply_update(zip_path):
+    """Распаковать архив обновления и заменить установку (через .bat-хелпер).
+    Доступно только в собранном приложении (onedir)."""
     if not getattr(sys, "frozen", False):
-        raise RuntimeError("Самообновление доступно только в собранном .exe")
-    cur = sys.executable
+        raise RuntimeError("Самообновление доступно только в собранном приложении")
+    install_dir = BASE
     pid = os.getpid()
+    temp_root = os.path.join(os.environ.get("TEMP", BASE),
+                             f"zapret_upd_{int(time.time())}")
+    os.makedirs(temp_root, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as z:
+        z.extractall(temp_root)
+
+    src = None
+    for root, _dirs, files in os.walk(temp_root):
+        if "ZapretControl.exe" in files:
+            src = root
+            break
+    if not src:
+        raise RuntimeError("В архиве обновления не найден ZapretControl.exe")
+
     bat = os.path.join(os.environ.get("TEMP", BASE), "zapret_gui_update.bat")
     script = (
         "@echo off\r\n"
         "chcp 65001 >nul\r\n"
         ":wait\r\n"
         f'tasklist /FI "PID eq {pid}" | find "{pid}" >nul\r\n'
-        "if not errorlevel 1 (\r\n"
-        "  timeout /t 1 /nobreak >nul\r\n"
-        "  goto wait\r\n"
-        ")\r\n"
-        f'move /y "{new_exe}" "{cur}" >nul\r\n'
-        f'start "" "{cur}"\r\n'
+        "if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto wait )\r\n"
+        f'robocopy "{src}" "{install_dir}" /E /IS /IT /R:2 /W:1 '
+        "/NFL /NDL /NJH /NJS /NP >nul\r\n"
+        f'start "" "{install_dir}\\ZapretControl.exe"\r\n'
+        f'rmdir /s /q "{temp_root}" >nul 2>&1\r\n'
+        f'del "{zip_path}" >nul 2>&1\r\n'
         'del "%~f0"\r\n'
     )
     with open(bat, "w", encoding="utf-8") as f:

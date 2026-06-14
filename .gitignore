@@ -1,11 +1,13 @@
 # Сборка PyInstaller
 build/
+dist/
 __pycache__/
 *.pyc
 *.pyo
 
 # Собранные / крупные / сторонние бинарники — раздаются через GitHub Releases
 ZapretControl*.exe
+ZapretControl*.zip
 TgWsProxy_windows.exe
 
 # Стратегии теперь в presets.json — .bat-файлы стратегий в репозитории не нужны

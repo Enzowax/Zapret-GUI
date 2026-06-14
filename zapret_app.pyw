@@ -814,20 +814,20 @@ class ZapretApp(ctk.CTk):
             msg += notes[:600] + "\n\n"
         if not getattr(sys, "frozen", False):
             messagebox.showinfo("Обновление",
-                                msg + "Самообновление работает только в собранном .exe.")
+                                msg + "Самообновление работает только в собранном приложении.")
             return
         if not info.get("url"):
-            messagebox.showwarning("Обновление", msg + "В релизе нет .exe-файла.")
+            messagebox.showwarning("Обновление", msg + "В релизе нет архива (.zip).")
             return
         if messagebox.askyesno("Обновление", msg + "Скачать и установить сейчас?"):
-            self._do_update(info["url"])
+            self._do_update(info["url"], info.get("size", 0))
 
-    def _do_update(self, url):
+    def _do_update(self, url, size=0):
         self.log_msg("Скачивание обновления…")
         self.upd_label.configure(text="скачивание…")
 
         def worker():
-            dest = os.path.join(os.environ.get("TEMP", zc.BASE), "ZapretControl_new.exe")
+            dest = os.path.join(os.environ.get("TEMP", zc.BASE), "ZapretControl_update.zip")
             last = [0]
 
             def prog(fr):
@@ -837,7 +837,7 @@ class ZapretApp(ctk.CTk):
                     self.log_msg(f"  скачано {pct}%")
 
             try:
-                zc.download_update(url, dest, progress_cb=prog)
+                zc.download_update(url, dest, progress_cb=prog, expected_size=size)
                 self.log_msg("Загрузка завершена. Установка и перезапуск…")
                 zc.apply_update(dest)
                 self.post(self._quit_for_update)

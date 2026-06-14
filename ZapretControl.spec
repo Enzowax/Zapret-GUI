@@ -49,10 +49,17 @@ a = Analysis(
     hookspath=[], runtime_hooks=[], excludes=[], noarchive=False,
 )
 pyz = PYZ(a.pure)
+
+# onedir: exe + папка _internal (без распаковки DLL во временную папку при запуске)
 exe = EXE(
-    pyz, a.scripts, a.binaries, a.datas, [],
+    pyz, a.scripts, [],
+    exclude_binaries=True,
     name="ZapretControl",
     debug=False, bootloader_ignore_signals=False, strip=False, upx=True,
-    runtime_tmpdir=None, console=False, disable_windowed_traceback=False,
+    console=False, disable_windowed_traceback=False,
     uac_admin=True, icon=None,
+)
+coll = COLLECT(
+    exe, a.binaries, a.datas,
+    strip=False, upx=True, upx_exclude=[], name="ZapretControl",
 )
