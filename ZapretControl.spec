@@ -8,10 +8,15 @@ PyInstaller spec: самодостаточный ZapretControl.exe.
 Сборка:  pyinstaller --noconfirm --distpath . --workpath build ZapretControl.spec
 """
 import os
+import sys
 import glob
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 ROOT = os.path.abspath(SPECPATH)
+# важно: чтобы локальные пакеты (tgproxy, zapret_core) находились при сборке
+# и через `pyinstaller` (CI), и через `python -m PyInstaller` (локально)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 datas = []
 
@@ -55,7 +60,11 @@ a = Analysis(
     datas=datas,
     hiddenimports=(ctk_hidden + pil_hidden + pystray_hidden
                    + ["darkdetect", "zapret_core"]
-                   + collect_submodules("tgproxy")),
+                   + collect_submodules("tgproxy")
+                   + ["tgproxy", "tgproxy.tg_ws_proxy", "tgproxy.config",
+                      "tgproxy.bridge", "tgproxy.raw_websocket", "tgproxy.pool",
+                      "tgproxy.balancer", "tgproxy.fake_tls", "tgproxy.stats",
+                      "tgproxy.utils", "tgproxy._aes"]),
     hookspath=[], runtime_hooks=[], excludes=[], noarchive=False,
 )
 pyz = PYZ(a.pure)
