@@ -1,0 +1,18 @@
+# Сборка PyInstaller
+build/
+__pycache__/
+*.pyc
+*.pyo
+
+# Собранные / крупные / сторонние бинарники — раздаются через GitHub Releases
+ZapretControl.exe
+ZapretControl_old.exe
+ZapretControl_new.exe
+TgWsProxy_windows.exe
+
+# Локальное состояние
+utils/app_config.json
+utils/gui_config.json
+utils/*.enabled
+lists/*.backup
+.write_test.tmp

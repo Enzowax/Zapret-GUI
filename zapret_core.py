@@ -1,0 +1,750 @@
+# -*- coding: utf-8 -*-
+"""
+zapret_core — вся логика обхода без GUI: пути, пресеты (как данные), разбор
+аргументов, управление процессом/службой, настройки, асинхронные проверки
+соединения, контроль целостности и TgWsProxy.
+
+Работает и как обычный скрипт, и внутри собранного PyInstaller .exe.
+
+Фаза 1: стратегии хранятся декларативно в presets.json (а не парсятся из .bat
+на лету); встроенные бинарники проверяются по SHA-256 при запуске .exe.
+"""
+
+import os
+import re
+import sys
+import ssl
+import json
+import time
+import shutil
+import socket
+import ctypes
+import hashlib
+import asyncio
+import subprocess
+import urllib.request
+
+
+# --------------------------------------------------------------------------- #
+#  Базовые пути (с учётом запуска из .exe)
+# --------------------------------------------------------------------------- #
+def _writable_dir(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+        test = os.path.join(path, ".write_test.tmp")
+        with open(test, "w") as f:
+            f.write("x")
+        os.remove(test)
+        return True
+    except Exception:
+        return False
+
+
+def _compute_base():
+    """Рабочая папка: рядом со скриптом, а для .exe — рядом с exe
+    (или %LOCALAPPDATA%\\ZapretControl, если рядом с exe писать нельзя)."""
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        if _writable_dir(exe_dir):
+            return exe_dir
+        return os.path.join(
+            os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "ZapretControl")
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+BASE = _compute_base()
+
+BIN = os.path.join(BASE, "bin") + os.sep
+LISTS = os.path.join(BASE, "lists") + os.sep
+UTILS = os.path.join(BASE, "utils")
+LOGS = os.path.join(BASE, "logs")
+WINWS = os.path.join(BIN, "winws.exe")
+
+GAME_FLAG = os.path.join(UTILS, "game_filter.enabled")
+UPDATE_FLAG = os.path.join(UTILS, "check_updates.enabled")
+IPSET_FILE = os.path.join(LISTS, "ipset-all.txt")
+CONFIG_FILE = os.path.join(UTILS, "app_config.json")
+PRESETS_JSON = os.path.join(BASE, "presets.json")
+
+SERVICE_NAME = "zapret"
+IPSET_URL = ("https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/"
+             "refs/heads/main/.service/ipset-service.txt")
+
+# --- версия приложения и источник обновлений (GitHub) ---
+APP_VERSION = "2.1.0"
+GITHUB_OWNER = "Enzowax"
+GITHUB_REPO = "Zapret-GUI"
+GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
+                     f"{GITHUB_REPO}/releases/latest")
+GITHUB_RELEASES_PAGE = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+
+CREATE_NO_WINDOW = 0x08000000
+CONFLICTING_SERVICES = ["GoodbyeDPI", "discordfix_zapret", "winws1", "winws2"]
+
+# Цели авто-поиска. Проверяется TLS-рукопожатие с нужным SNI.
+AUTO_TARGETS = {
+    "discord": ["discord.com", "gateway.discord.gg", "cdn.discordapp.com"],
+    "youtube": ["www.youtube.com", "i.ytimg.com", "redirector.googlevideo.com"],
+    "google":  ["www.google.com", "www.gstatic.com"],
+}
+AUTO_QUICK_HOST = {"discord": "discord.com", "youtube": "www.youtube.com",
+                   "google": "www.google.com"}
+AUTO_SERVICE_LABELS = {"discord": "Discord", "youtube": "YouTube", "google": "Google"}
+
+QUICK_WAIT = 2.0
+QUICK_TIMEOUT = 2.0
+FULL_WAIT = 3.5
+FULL_TIMEOUT = 3.0
+
+TGWS_EXE_NAME = "TgWsProxy_windows.exe"
+
+# подпапки и файлы, которые разворачиваются из .exe рядом с ним при первом запуске
+RUNTIME_SUBDIRS = ("bin", "lists", "utils")
+RUNTIME_ROOT_FILES = ("presets.json",)
+# файлы, чья целостность критична (проверяются по SHA-256)
+INTEGRITY_SUBDIRS = ("bin",)
+
+
+# --------------------------------------------------------------------------- #
+#  Развёртывание и контроль целостности встроенных файлов (для .exe)
+# --------------------------------------------------------------------------- #
+def _meipass():
+    return getattr(sys, "_MEIPASS", None) if getattr(sys, "frozen", False) else None
+
+
+def ensure_runtime():
+    """Однократно распаковать встроенные bin/lists/utils, presets.json,
+    пресеты *.bat и TgWsProxy рядом с exe. Существующее не перезаписывается."""
+    src = _meipass()
+    if not src or not os.path.isdir(src):
+        return []
+    copied = []
+
+    def copy_if_absent(sp, dp):
+        if os.path.isfile(sp) and not os.path.exists(dp):
+            try:
+                os.makedirs(os.path.dirname(dp), exist_ok=True)
+                shutil.copy2(sp, dp)
+                copied.append(dp)
+            except Exception:
+                pass
+
+    os.makedirs(BASE, exist_ok=True)
+    for sub in RUNTIME_SUBDIRS:
+        s = os.path.join(src, sub)
+        if os.path.isdir(s):
+            for name in os.listdir(s):
+                copy_if_absent(os.path.join(s, name), os.path.join(BASE, sub, name))
+    for name in os.listdir(src):
+        if name.lower().endswith(".bat"):
+            copy_if_absent(os.path.join(src, name), os.path.join(BASE, name))
+    for name in RUNTIME_ROOT_FILES:
+        copy_if_absent(os.path.join(src, name), os.path.join(BASE, name))
+    copy_if_absent(os.path.join(src, TGWS_EXE_NAME), os.path.join(BASE, TGWS_EXE_NAME))
+    return copied
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def verify_runtime():
+    """Сверить критичные бинарники на диске со встроенными в .exe и
+    перезаписать повреждённые/изменённые. Возвращает список исправленных."""
+    src = _meipass()
+    if not src or not os.path.isdir(src):
+        return []
+    fixed = []
+    for sub in INTEGRITY_SUBDIRS:
+        s = os.path.join(src, sub)
+        d = os.path.join(BASE, sub)
+        if not os.path.isdir(s):
+            continue
+        for name in os.listdir(s):
+            sp, dp = os.path.join(s, name), os.path.join(d, name)
+            if not os.path.isfile(sp):
+                continue
+            try:
+                if (not os.path.isfile(dp)) or _sha256(sp) != _sha256(dp):
+                    shutil.copy2(sp, dp)
+                    fixed.append(dp)
+            except Exception:
+                pass
+    return fixed
+
+
+# --------------------------------------------------------------------------- #
+#  Скрытый запуск команд
+# --------------------------------------------------------------------------- #
+def _startupinfo():
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0
+    return si
+
+
+def run_hidden(cmd, shell=False, timeout=30):
+    return subprocess.run(
+        cmd, shell=shell, capture_output=True, text=True,
+        startupinfo=_startupinfo(), creationflags=CREATE_NO_WINDOW,
+        timeout=timeout, encoding="utf-8", errors="replace",
+    )
+
+
+def is_admin():
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def relaunch_as_admin():
+    if getattr(sys, "frozen", False):
+        exe, params = sys.executable, ""
+    else:
+        exe, params = sys.executable, f'"{os.path.abspath(sys.argv[0])}"'
+    ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, BASE, 1)
+
+
+# --------------------------------------------------------------------------- #
+#  Разбор стратегий (.bat -> аргументы) и пресеты как данные
+# --------------------------------------------------------------------------- #
+def natural_key(name):
+    return [int(t) if t.isdigit() else t.lower()
+            for t in re.split(r"(\d+)", name)]
+
+
+def list_strategies():
+    """Список .bat-стратегий (для импорта/конвертации в presets.json)."""
+    result = []
+    try:
+        names = os.listdir(BASE)
+    except Exception:
+        return result
+    for name in names:
+        if not name.lower().endswith(".bat"):
+            continue
+        if name.lower().startswith("service"):
+            continue
+        try:
+            with open(os.path.join(BASE, name), encoding="utf-8", errors="replace") as f:
+                if "winws.exe" not in f.read().lower():
+                    continue
+        except Exception:
+            continue
+        result.append(name)
+    result.sort(key=natural_key)
+    return result
+
+
+def extract_winws_argstring(bat_path):
+    with open(bat_path, encoding="utf-8", errors="replace") as f:
+        raw = f.read().splitlines()
+    start_i = None
+    for i, ln in enumerate(raw):
+        if "winws.exe" in ln.lower():
+            start_i = i
+            break
+    if start_i is None:
+        return None
+    parts = []
+    i = start_i
+    while i < len(raw):
+        ln = raw[i].rstrip()
+        cont = ln.endswith("^")
+        if cont:
+            ln = ln[:-1]
+        parts.append(ln)
+        if not cont:
+            break
+        i += 1
+    full = " ".join(parts)
+    idx = full.lower().find("winws.exe")
+    after = full[idx + len("winws.exe"):].lstrip()
+    if after.startswith('"'):
+        after = after[1:]
+    return after.strip()
+
+
+def game_filter_values(mode):
+    return {
+        "off": ("12", "12"),
+        "all": ("1024-65535", "1024-65535"),
+        "tcp": ("1024-65535", "12"),
+        "udp": ("12", "1024-65535"),
+    }.get(mode, ("12", "12"))
+
+
+def substitute(argstr, gf_tcp, gf_udp):
+    s = argstr
+    s = s.replace("%BIN%", BIN).replace("%LISTS%", LISTS)
+    s = s.replace("%GameFilterTCP%", gf_tcp).replace("%GameFilterUDP%", gf_udp)
+    s = s.replace("%GameFilter%", gf_tcp)
+    return s
+
+
+def tokenize(s):
+    tokens, cur, in_q = [], "", False
+    for ch in s:
+        if ch == '"':
+            in_q = not in_q
+        elif ch.isspace() and not in_q:
+            if cur:
+                tokens.append(cur)
+                cur = ""
+        else:
+            cur += ch
+    if cur:
+        tokens.append(cur)
+    return tokens
+
+
+def build_args_str(argstr, mode):
+    """Из строки аргументов с плейсхолдерами -> список аргументов winws.exe."""
+    if not argstr:
+        return None
+    gf_tcp, gf_udp = game_filter_values(mode)
+    return tokenize(substitute(argstr, gf_tcp, gf_udp))
+
+
+def build_args(bat_path, mode):
+    """Совместимость: список аргументов из .bat-файла."""
+    return build_args_str(extract_winws_argstring(bat_path), mode)
+
+
+def _preset_id(name):
+    return re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_") or "preset"
+
+
+def generate_presets_json(force=False):
+    """Сконвертировать .bat-стратегии в декларативный presets.json (однократно)."""
+    if os.path.exists(PRESETS_JSON) and not force:
+        return False
+    presets = []
+    for fname in list_strategies():
+        argstr = extract_winws_argstring(os.path.join(BASE, fname))
+        if not argstr:
+            continue
+        base = os.path.splitext(fname)[0]
+        presets.append({
+            "id": _preset_id(base),
+            "name": base,
+            "source_bat": fname,
+            "description": "",
+            "label": "recommended" if fname == "general.bat" else None,
+            "engine": "winws1",
+            "args": argstr,
+        })
+    presets.sort(key=lambda p: (p["name"] != "general", natural_key(p["name"])))
+    try:
+        with open(PRESETS_JSON, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "presets": presets}, f,
+                      ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def load_presets():
+    """Список пресетов: из presets.json, иначе — построить из .bat в памяти."""
+    try:
+        with open(PRESETS_JSON, encoding="utf-8") as f:
+            presets = json.load(f).get("presets", [])
+        if presets:
+            return presets
+    except Exception:
+        pass
+    presets = []
+    for fname in list_strategies():
+        argstr = extract_winws_argstring(os.path.join(BASE, fname))
+        if not argstr:
+            continue
+        base = os.path.splitext(fname)[0]
+        presets.append({
+            "id": _preset_id(base), "name": base, "source_bat": fname,
+            "description": "", "label": "recommended" if fname == "general.bat" else None,
+            "engine": "winws1", "args": argstr,
+        })
+    presets.sort(key=lambda p: (p["name"] != "general", natural_key(p["name"])))
+    return presets
+
+
+def quote_for_service(tok):
+    q = '\\"'
+    needs = lambda v: (":" in v) or (" " in v)
+    if tok.startswith("--") and "=" in tok:
+        k, v = tok.split("=", 1)
+        if needs(v):
+            v = q + v + q
+        return k + "=" + v
+    if needs(tok):
+        return q + tok + q
+    return tok
+
+
+# --------------------------------------------------------------------------- #
+#  Настройки
+# --------------------------------------------------------------------------- #
+def get_game_mode():
+    if not os.path.exists(GAME_FLAG):
+        return "off"
+    try:
+        txt = open(GAME_FLAG, encoding="utf-8", errors="replace").read().strip().lower()
+    except Exception:
+        return "off"
+    return txt if txt in ("all", "tcp", "udp") else "udp"
+
+
+def set_game_mode(mode):
+    os.makedirs(UTILS, exist_ok=True)
+    if mode == "off":
+        if os.path.exists(GAME_FLAG):
+            os.remove(GAME_FLAG)
+    else:
+        with open(GAME_FLAG, "w", encoding="utf-8") as f:
+            f.write(mode)
+
+
+def get_update_enabled():
+    return os.path.exists(UPDATE_FLAG)
+
+
+def set_update_enabled(enabled):
+    os.makedirs(UTILS, exist_ok=True)
+    if enabled:
+        with open(UPDATE_FLAG, "w", encoding="utf-8") as f:
+            f.write("ENABLED")
+    elif os.path.exists(UPDATE_FLAG):
+        os.remove(UPDATE_FLAG)
+
+
+def get_ipset_status():
+    try:
+        with open(IPSET_FILE, encoding="utf-8", errors="replace") as f:
+            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+    except FileNotFoundError:
+        return "нет файла"
+    if not lines:
+        return "any (все IP)"
+    if len(lines) == 1 and lines[0].strip() == "203.0.113.113/32":
+        return "none (выкл.)"
+    return f"loaded ({len(lines)} строк)"
+
+
+def load_config():
+    try:
+        with open(CONFIG_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_config(cfg):
+    try:
+        os.makedirs(UTILS, exist_ok=True)
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------- #
+#  Процесс / служба
+# --------------------------------------------------------------------------- #
+def winws_running():
+    try:
+        out = run_hidden(["tasklist", "/FI", "IMAGENAME eq winws.exe"]).stdout
+        return "winws.exe" in out.lower()
+    except Exception:
+        return False
+
+
+def service_installed():
+    try:
+        return run_hidden(["sc", "query", SERVICE_NAME]).returncode == 0
+    except Exception:
+        return False
+
+
+def service_running():
+    try:
+        return "RUNNING" in run_hidden(["sc", "query", SERVICE_NAME]).stdout.upper()
+    except Exception:
+        return False
+
+
+def enable_tcp_timestamps():
+    try:
+        out = run_hidden(["netsh", "interface", "tcp", "show", "global"]).stdout.lower()
+        if "timestamps" in out and "enabled" in out:
+            return
+        run_hidden(["netsh", "interface", "tcp", "set", "global", "timestamps=enabled"])
+    except Exception:
+        pass
+
+
+def remove_windivert():
+    run_hidden(["net", "stop", "WinDivert"])
+    run_hidden(["sc", "delete", "WinDivert"])
+    run_hidden(["net", "stop", "WinDivert14"])
+    run_hidden(["sc", "delete", "WinDivert14"])
+
+
+def kill_winws_only():
+    run_hidden(["taskkill", "/IM", "winws.exe", "/F"])
+
+
+def start_winws_silent(args):
+    return subprocess.Popen(
+        [WINWS] + args, cwd=BIN,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        startupinfo=_startupinfo(), creationflags=CREATE_NO_WINDOW,
+    )
+
+
+def start_winws_logged(args):
+    return subprocess.Popen(
+        [WINWS] + args, cwd=BIN,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
+        startupinfo=_startupinfo(), creationflags=CREATE_NO_WINDOW, bufsize=1,
+    )
+
+
+def install_service(display_name, argstr, mode):
+    """Создать службу автозапуска из строки аргументов. -> (ok, log)."""
+    args = build_args_str(argstr, mode)
+    if not args:
+        return False, "Не удалось разобрать аргументы пресета."
+    logs = []
+    kill_winws_only()
+    run_hidden(["net", "stop", SERVICE_NAME])
+    run_hidden(["sc", "delete", SERVICE_NAME])
+    enable_tcp_timestamps()
+
+    svc_args = " ".join(quote_for_service(t) for t in args)
+    binpath = f'\\"{WINWS}\\" {svc_args}'
+    cmd = (f'sc create {SERVICE_NAME} binPath= "{binpath}" '
+           f'DisplayName= "zapret" start= auto')
+    res = run_hidden(cmd, shell=True)
+    logs.append((res.stdout or res.stderr).strip())
+    run_hidden(["sc", "description", SERVICE_NAME, "Zapret DPI bypass software"])
+    sres = run_hidden(["sc", "start", SERVICE_NAME])
+    logs.append((sres.stdout or sres.stderr).strip())
+
+    run_hidden(["reg", "add", r"HKLM\System\CurrentControlSet\Services\zapret",
+                "/v", "zapret-discord-youtube", "/t", "REG_SZ", "/d", display_name, "/f"])
+    return service_installed(), "\n".join(x for x in logs if x)
+
+
+def remove_service():
+    run_hidden(["net", "stop", SERVICE_NAME])
+    run_hidden(["sc", "delete", SERVICE_NAME])
+    kill_winws_only()
+    remove_windivert()
+
+
+def update_ipset():
+    try:
+        if os.path.exists(IPSET_FILE):
+            backup = IPSET_FILE + ".backup"
+            try:
+                if os.path.exists(backup):
+                    os.remove(backup)
+                os.replace(IPSET_FILE, backup)
+            except Exception:
+                pass
+        req = urllib.request.Request(IPSET_URL, headers={"Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = r.read()
+        with open(IPSET_FILE, "wb") as f:
+            f.write(data)
+        n = len([x for x in data.decode("utf-8", "replace").splitlines() if x.strip()])
+        return True, f"IPSet обновлён: {n} строк."
+    except Exception as e:
+        return False, f"Ошибка обновления IPSet: {e}"
+
+
+def run_diagnostics():
+    out = []
+    out.append(("RUNNING" in run_hidden(["sc", "query", "BFE"]).stdout.upper(),
+                "Base Filtering Engine"))
+    g = run_hidden(["netsh", "interface", "tcp", "show", "global"]).stdout.lower()
+    out.append(("timestamps" in g and "enabled" in g, "TCP timestamps"))
+    out.append((os.path.exists(os.path.join(BIN, "WinDivert64.sys")),
+                "WinDivert64.sys в bin\\"))
+    found = [s for s in CONFLICTING_SERVICES
+             if run_hidden(["sc", "query", s]).returncode == 0]
+    out.append((not found, "Конфликтующие обходы: "
+                + (", ".join(found) if found else "нет")))
+    out.append((winws_running(), "winws.exe запущен"))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+#  Самообновление через GitHub Releases
+# --------------------------------------------------------------------------- #
+def _version_tuple(v):
+    v = (v or "").strip().lstrip("vV")
+    out = []
+    for part in re.split(r"[.\-+]", v):
+        out.append(int(part) if part.isdigit() else 0)
+    return tuple(out) or (0,)
+
+
+def check_update(timeout=10):
+    """Проверить последний релиз на GitHub.
+    -> {available, current, latest, url, notes} или {error}."""
+    try:
+        req = urllib.request.Request(
+            GITHUB_API_LATEST,
+            headers={"Accept": "application/vnd.github+json",
+                     "User-Agent": "ZapretGUI"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        latest = (data.get("tag_name") or "").strip()
+        notes = data.get("body") or ""
+        url = ""
+        for a in data.get("assets", []):
+            if (a.get("name", "").lower().endswith(".exe")):
+                url = a.get("browser_download_url", "")
+                break
+        available = bool(latest) and _version_tuple(latest) > _version_tuple(APP_VERSION)
+        return {"available": available, "current": APP_VERSION,
+                "latest": latest or "?", "url": url, "notes": notes}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def download_update(url, dest, progress_cb=None, timeout=120):
+    """Скачать файл обновления. progress_cb(frac) — опционально."""
+    req = urllib.request.Request(url, headers={"User-Agent": "ZapretGUI"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        total = int(r.headers.get("Content-Length") or 0)
+        got = 0
+        with open(dest, "wb") as f:
+            while True:
+                chunk = r.read(65536)
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+                if progress_cb and total:
+                    progress_cb(got / total)
+    return dest
+
+
+def apply_update(new_exe):
+    """Заменить текущий exe скачанным и перезапуститься (через .bat-хелпер).
+    Доступно только в собранном .exe."""
+    if not getattr(sys, "frozen", False):
+        raise RuntimeError("Самообновление доступно только в собранном .exe")
+    cur = sys.executable
+    pid = os.getpid()
+    bat = os.path.join(os.environ.get("TEMP", BASE), "zapret_gui_update.bat")
+    script = (
+        "@echo off\r\n"
+        "chcp 65001 >nul\r\n"
+        ":wait\r\n"
+        f'tasklist /FI "PID eq {pid}" | find "{pid}" >nul\r\n'
+        "if not errorlevel 1 (\r\n"
+        "  timeout /t 1 /nobreak >nul\r\n"
+        "  goto wait\r\n"
+        ")\r\n"
+        f'move /y "{new_exe}" "{cur}" >nul\r\n'
+        f'start "" "{cur}"\r\n'
+        'del "%~f0"\r\n'
+    )
+    with open(bat, "w", encoding="utf-8") as f:
+        f.write(script)
+    subprocess.Popen(["cmd", "/c", bat], creationflags=CREATE_NO_WINDOW,
+                     startupinfo=_startupinfo())
+
+
+# --------------------------------------------------------------------------- #
+#  Асинхронные проверки соединения (TLS-рукопожатие к хостам)
+# --------------------------------------------------------------------------- #
+async def _check_host(host, timeout, attempts):
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    for _ in range(attempts):
+        t0 = time.perf_counter()
+        writer = None
+        try:
+            fut = asyncio.open_connection(host, 443, ssl=ctx, server_hostname=host)
+            reader, writer = await asyncio.wait_for(fut, timeout=timeout)
+            return True, (time.perf_counter() - t0) * 1000.0
+        except Exception:
+            continue
+        finally:
+            if writer is not None:
+                try:
+                    writer.close()
+                except Exception:
+                    pass
+    return False, None
+
+
+async def _check_many(hosts, timeout, attempts):
+    return await asyncio.gather(*[_check_host(h, timeout, attempts) for h in hosts])
+
+
+def check_hosts(hosts, timeout, attempts=1):
+    if not hosts:
+        return {}
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        results = loop.run_until_complete(_check_many(hosts, timeout, attempts))
+    finally:
+        try:
+            loop.close()
+        except Exception:
+            pass
+    return dict(zip(hosts, results))
+
+
+# --------------------------------------------------------------------------- #
+#  TgWsProxy (разблокировка Telegram)
+# --------------------------------------------------------------------------- #
+def tgws_default_path():
+    cfg = load_config()
+    p = cfg.get("tgws_path")
+    if p and os.path.exists(p):
+        return p
+    candidates = [
+        os.path.join(BASE, TGWS_EXE_NAME),
+        os.path.join(os.path.expanduser("~"), "Desktop", TGWS_EXE_NAME),
+        os.path.join(os.environ.get("USERPROFILE", ""), "Desktop", TGWS_EXE_NAME),
+    ]
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    return ""
+
+
+def tgws_running():
+    try:
+        out = run_hidden(["tasklist", "/FI", f"IMAGENAME eq {TGWS_EXE_NAME}"]).stdout
+        return TGWS_EXE_NAME.lower() in out.lower()
+    except Exception:
+        return False
+
+
+def tgws_start(path):
+    if not path or not os.path.exists(path):
+        raise FileNotFoundError(path)
+    return subprocess.Popen(
+        [path], cwd=os.path.dirname(path) or None,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        startupinfo=_startupinfo(), creationflags=CREATE_NO_WINDOW,
+    )
+
+
+def tgws_stop():
+    run_hidden(["taskkill", "/IM", TGWS_EXE_NAME, "/F"])
