@@ -167,10 +167,22 @@ class ZapretApp(ctk.CTk):
         side.grid(row=0, column=0, sticky="nsew")
         side.grid_propagate(False)
 
-        ctk.CTkLabel(side, text="  ⚡  Zapret GUI", font=(FONT, 20, "bold"),
-                     text_color=ACCENT, anchor="w").pack(fill="x", padx=16, pady=(22, 4))
-        ctk.CTkLabel(side, text="  by Enzowax", font=(FONT, 11),
-                     text_color=MUTED, anchor="w").pack(fill="x", padx=16, pady=(0, 18))
+        head = ctk.CTkFrame(side, fg_color="transparent")
+        head.pack(fill="x", padx=14, pady=(20, 16))
+        try:
+            from PIL import Image
+            self._logo_img = ctk.CTkImage(Image.open(self._asset("icon.png")),
+                                          size=(30, 30))
+            ctk.CTkLabel(head, text="", image=self._logo_img).pack(side="left")
+        except Exception:
+            ctk.CTkLabel(head, text="⚡", font=(FONT, 24),
+                         text_color=ACCENT).pack(side="left")
+        ttl = ctk.CTkFrame(head, fg_color="transparent")
+        ttl.pack(side="left", padx=(10, 0))
+        ctk.CTkLabel(ttl, text="Zapret GUI", font=(FONT, 18, "bold"),
+                     text_color=ACCENT, anchor="w").pack(anchor="w")
+        ctk.CTkLabel(ttl, text="by Enzowax", font=(FONT, 11),
+                     text_color=MUTED, anchor="w").pack(anchor="w")
 
         for key, label in [("control", "🛡   Управление"), ("auto", "🔍   Авто-поиск"),
                            ("tgws", "✈   Telegram"), ("settings", "⚙   Настройки"),
