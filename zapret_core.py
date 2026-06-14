@@ -73,7 +73,7 @@ IPSET_URL = ("https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/
              "refs/heads/main/.service/ipset-service.txt")
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.8.0"
+APP_VERSION = "2.9.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -458,6 +458,41 @@ def save_config(cfg):
             json.dump(cfg, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
+
+def export_settings(path):
+    """Сохранить конфиг и пресеты в один файл (бэкап/перенос)."""
+    data = {"app": "ZapretGUI", "version": APP_VERSION, "config": load_config()}
+    try:
+        with open(PRESETS_JSON, encoding="utf-8") as f:
+            data["presets"] = json.load(f)
+    except Exception:
+        pass
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return True
+
+
+def import_settings(path):
+    """Восстановить конфиг и пресеты из файла. Возвращает (ok, сообщение)."""
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        return False, "неверный формат файла"
+    n = 0
+    if isinstance(data.get("config"), dict):
+        save_config(data["config"])
+        n += 1
+    if isinstance(data.get("presets"), dict) and data["presets"].get("presets"):
+        try:
+            with open(PRESETS_JSON, "w", encoding="utf-8") as f:
+                json.dump(data["presets"], f, ensure_ascii=False, indent=2)
+            n += 1
+        except Exception:
+            pass
+    if not n:
+        return False, "в файле нет настроек/пресетов"
+    return True, "настройки импортированы"
 
 
 # --------------------------------------------------------------------------- #

@@ -356,6 +356,12 @@ class ZapretApp(ctk.CTk):
         self._btn(box, "Сохранить отчёт", self.on_support_bundle, width=160).pack(
             side="left", padx=4)
         self._btn(box, "Папка логов", self.on_open_logs, width=130).pack(side="left", padx=4)
+        box2 = ctk.CTkFrame(c, fg_color="transparent")
+        box2.grid(row=1, column=0, columnspan=3, padx=12, pady=(0, 12), sticky="w")
+        self._btn(box2, "Экспорт настроек", self.on_export_settings, width=160).pack(
+            side="left", padx=4)
+        self._btn(box2, "Импорт настроек", self.on_import_settings, width=160).pack(
+            side="left", padx=4)
         return p
 
     # -- страница: Авто-поиск --------------------------------------------- #
@@ -902,6 +908,37 @@ class ZapretApp(ctk.CTk):
             os.startfile(zc.LOGS)
         except Exception as e:
             self.log_msg(str(e))
+
+    def on_export_settings(self):
+        path = filedialog.asksaveasfilename(
+            title="Экспорт настроек", defaultextension=".json",
+            initialfile="zapret-gui-settings.json",
+            filetypes=[("JSON", "*.json")])
+        if not path:
+            return
+        try:
+            zc.export_settings(path)
+            self.log_msg(f"Настройки сохранены: {path}")
+        except Exception as e:
+            self.log_msg(f"[ОШИБКА] экспорт: {e}")
+
+    def on_import_settings(self):
+        path = filedialog.askopenfilename(
+            title="Импорт настроек", filetypes=[("JSON", "*.json")])
+        if not path:
+            return
+        try:
+            ok, msg = zc.import_settings(path)
+            self.log_msg(("Импорт: " if ok else "[ОШИБКА] импорт: ") + msg)
+            if ok:
+                self.cfg = zc.load_config()
+                self.presets = zc.load_presets()
+                self.preset_by_name = {p["name"]: p for p in self.presets}
+                messagebox.showinfo("Импорт",
+                                    "Настройки импортированы. Перезапустите "
+                                    "приложение, чтобы применить полностью.")
+        except Exception as e:
+            self.log_msg(f"[ОШИБКА] импорт: {e}")
 
     # -- трей ------------------------------------------------------------- #
     def _on_tray_toggle(self):
