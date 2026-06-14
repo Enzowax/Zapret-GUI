@@ -383,9 +383,10 @@ class ZapretApp(ctk.CTk):
     # -- страница: Telegram ----------------------------------------------- #
     def _build_tgws_page(self):
         p = self._page()
-        self._title(p, "Telegram (TgWsProxy)",
-                    "Обход блокировки Telegram через WebSocket-прокси. Работает "
-                    "независимо от основного обхода.")
+        self._title(p, "Telegram-прокси",
+                    "Встроенный MTProto-прокси для Telegram (WebSocket-мост). "
+                    "Отдельная программа не нужна — всё работает внутри приложения. "
+                    "Запустите прокси и добавьте ссылку в Telegram.")
         self._section(p, "Статус")
         c = self._card(p)
         self.tg_dot = ctk.CTkLabel(c, text="●", font=(FONT, 24), text_color=MUTED)
@@ -397,7 +398,8 @@ class ZapretApp(ctk.CTk):
         self.tg_sub.grid(row=1, column=1, sticky="nw", pady=(0, 14))
 
         self._section(p, "Управление")
-        c = self._card_row(p, "✈", "TgWsProxy", "Запуск/остановка прокси Telegram")
+        c = self._card_row(p, "✈", "Встроенный прокси",
+                           f"Слушает {zc.TG_DEFAULT_HOST}:{zc.tg_get_port()}")
         box = ctk.CTkFrame(c, fg_color="transparent")
         box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
         self.btn_tg_start = self._btn(box, "▶  Запустить", self.on_tg_start, accent=True)
@@ -405,15 +407,24 @@ class ZapretApp(ctk.CTk):
         self.btn_tg_stop = self._btn(box, "■  Остановить", self.on_tg_stop)
         self.btn_tg_stop.pack(side="left", padx=4)
 
-        self._section(p, "Путь к программе")
+        self._section(p, "Ссылка для Telegram")
         c = self._card(p)
-        self.tg_path_var = ctk.StringVar(value=zc.tgws_default_path() or "(не найден)")
-        ctk.CTkEntry(c, textvariable=self.tg_path_var, font=(FONT, 12), height=36,
+        self.tg_link_var = ctk.StringVar(value=zc.tg_proxy_url())
+        ctk.CTkEntry(c, textvariable=self.tg_link_var, font=(FONT, 12), height=36,
                      fg_color=WIN_BG, border_width=0).grid(
             row=0, column=0, sticky="ew", padx=(12, 8), pady=12)
         c.grid_columnconfigure(0, weight=1)
-        self._btn(c, "Выбрать…", self.on_tg_pick, width=110).grid(
-            row=0, column=1, padx=12, pady=12)
+        self._btn(c, "Скопировать", self.on_tg_copy, width=130).grid(
+            row=0, column=1, padx=4, pady=12)
+        self._btn(c, "Открыть в Telegram", self.on_tg_open, accent=True, width=180).grid(
+            row=0, column=2, padx=(4, 12), pady=12)
+
+        ctk.CTkLabel(
+            p, wraplength=720, justify="left", font=(FONT, 11), text_color=MUTED,
+            text=("Как подключить: «Открыть в Telegram» добавит прокси автоматически, "
+                  "либо вручную — Telegram → Настройки → Данные и память → Прокси → "
+                  "Добавить прокси → MTProto, и включите его.")
+        ).pack(anchor="w", padx=12, pady=(6, 4))
         return p
 
     # -- страница: Журнал ------------------------------------------------- #
@@ -486,7 +497,7 @@ class ZapretApp(ctk.CTk):
             installed = zc.service_installed()
             svc_run = zc.service_running() if installed else False
             ipset = zc.get_ipset_status()
-            tg = zc.tgws_running()
+            tg = zc.tg_proxy_running()
             self.post(lambda: self._apply_status(running, installed, svc_run, ipset, tg))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -510,11 +521,11 @@ class ZapretApp(ctk.CTk):
 
         if tg:
             self.tg_dot.configure(text_color=GREEN)
-            self.tg_title.configure(text="TgWsProxy работает")
-            self.tg_sub.configure(text="Обход Telegram активен")
+            self.tg_title.configure(text="Telegram-прокси работает")
+            self.tg_sub.configure(text=f"Слушает {zc.TG_DEFAULT_HOST}:{zc.tg_get_port()}")
         else:
             self.tg_dot.configure(text_color=RED)
-            self.tg_title.configure(text="TgWsProxy остановлен")
+            self.tg_title.configure(text="Telegram-прокси остановлен")
             self.tg_sub.configure(text="Прокси не запущен")
 
     # -- управление обходом ----------------------------------------------- #
@@ -867,43 +878,58 @@ class ZapretApp(ctk.CTk):
         box.insert("1.0", zc.WINWS + "\n  " + "\n  ".join(args))
         box.configure(state="disabled")
 
-    # -- TgWsProxy -------------------------------------------------------- #
-    def on_tg_pick(self):
-        path = filedialog.askopenfilename(title="Выберите TgWsProxy",
-                                          filetypes=[("Программа", "*.exe")])
-        if path:
-            self.tg_path_var.set(path)
-            self.cfg["tgws_path"] = path
-            zc.save_config(self.cfg)
-            self.log_msg(f"Путь TgWsProxy: {path}")
-
+    # -- Telegram-прокси (встроенный) ------------------------------------- #
     def on_tg_start(self):
-        path = self.tg_path_var.get()
-        if not path or not os.path.exists(path):
-            messagebox.showerror("TgWsProxy", "Файл TgWsProxy не найден. "
-                                 "Укажите путь кнопкой «Выбрать…».")
-            return
-        self.log_msg("Запуск TgWsProxy…")
+        self.log_msg(f"Запуск встроенного Telegram-прокси на "
+                     f"{zc.TG_DEFAULT_HOST}:{zc.tg_get_port()}…")
 
         def worker():
             try:
-                zc.tgws_start(path)
-                self.log_msg("TgWsProxy запущен.")
+                zc.tg_proxy_start()
+                time.sleep(1.3)
+                if zc.tg_proxy_running():
+                    self.log_msg("Прокси запущен. Нажмите «Открыть в Telegram» "
+                                 "или «Скопировать».")
+                else:
+                    self.log_msg("[ОШИБКА] прокси не запустился: "
+                                 + (zc.tg_last_error() or "возможно, порт занят"))
             except Exception as e:
-                self.log_msg(f"[ОШИБКА] TgWsProxy: {e}")
+                self.log_msg(f"[ОШИБКА] Telegram-прокси: {e}")
             self.post(self.refresh_status)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def on_tg_stop(self):
-        self.log_msg("Остановка TgWsProxy…")
+        self.log_msg("Остановка Telegram-прокси…")
 
         def worker():
-            zc.tgws_stop()
-            self.log_msg("TgWsProxy остановлен.")
+            zc.tg_proxy_stop()
+            self.log_msg("Telegram-прокси остановлен.")
             self.post(self.refresh_status)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def on_tg_copy(self):
+        link = zc.tg_proxy_url()
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(link)
+            self.log_msg("Ссылка прокси скопирована в буфер обмена.")
+        except Exception as e:
+            self.log_msg(f"[ОШИБКА] копирование: {e}")
+
+    def on_tg_open(self):
+        link = zc.tg_proxy_url()
+        if not zc.tg_proxy_running():
+            self.log_msg("Сначала запустите прокси.")
+        try:
+            os.startfile(link)
+        except Exception:
+            try:
+                import webbrowser
+                webbrowser.open(link)
+            except Exception as e:
+                self.log_msg(f"[ОШИБКА] открытие ссылки: {e}")
 
     # -- авто-поиск (двухфазный) ------------------------------------------ #
     def on_auto_start(self):
@@ -1136,6 +1162,10 @@ class ZapretApp(ctk.CTk):
                 zc.kill_winws_only()
                 zc.remove_windivert()
         self._closing = True
+        try:
+            zc.tg_proxy_stop()
+        except Exception:
+            pass
         if self._logf:
             try:
                 self._logf.close()

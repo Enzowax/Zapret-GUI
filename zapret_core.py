@@ -22,6 +22,7 @@ import ctypes
 import hashlib
 import zipfile
 import asyncio
+import threading
 import subprocess
 import urllib.request
 
@@ -72,7 +73,7 @@ IPSET_URL = ("https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/
              "refs/heads/main/.service/ipset-service.txt")
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.3.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -102,7 +103,9 @@ WATCHDOG_INTERVAL = 45          # сек между проверками
 WATCHDOG_HEALTH_HOSTS = ["discord.com", "www.youtube.com"]
 WATCHDOG_FAIL_THRESHOLD = 2     # подряд неудачных проверок до перезапуска
 
-TGWS_EXE_NAME = "TgWsProxy_windows.exe"
+# встроенный Telegram-прокси (вшитый пакет tgproxy)
+TG_DEFAULT_HOST = "127.0.0.1"
+TG_DEFAULT_PORT = 1443
 
 # подпапки и файлы, которые разворачиваются из .exe рядом с ним при первом запуске
 RUNTIME_SUBDIRS = ("bin", "lists", "utils")
@@ -146,7 +149,6 @@ def ensure_runtime():
             copy_if_absent(os.path.join(src, name), os.path.join(BASE, name))
     for name in RUNTIME_ROOT_FILES:
         copy_if_absent(os.path.join(src, name), os.path.join(BASE, name))
-    copy_if_absent(os.path.join(src, TGWS_EXE_NAME), os.path.join(BASE, TGWS_EXE_NAME))
     return copied
 
 
@@ -733,44 +735,88 @@ def check_hosts(hosts, timeout, attempts=1):
 
 
 # --------------------------------------------------------------------------- #
-#  TgWsProxy (разблокировка Telegram)
+#  Встроенный Telegram-прокси (вшитый пакет tgproxy, MIT, Flowseal/tg-ws-proxy)
 # --------------------------------------------------------------------------- #
-def tgws_default_path():
+_tg_thread = None          # поток с asyncio-циклом прокси
+_tg_async = None           # (loop, stop_event)
+_tg_error = ""             # последняя ошибка запуска
+
+
+def tg_get_secret():
+    """32-символьный hex-секрет (стабильный, хранится в конфиге)."""
     cfg = load_config()
-    p = cfg.get("tgws_path")
-    if p and os.path.exists(p):
-        return p
-    candidates = [
-        os.path.join(BASE, TGWS_EXE_NAME),
-        os.path.join(os.path.expanduser("~"), "Desktop", TGWS_EXE_NAME),
-        os.path.join(os.environ.get("USERPROFILE", ""), "Desktop", TGWS_EXE_NAME),
-    ]
-    for c in candidates:
-        if c and os.path.exists(c):
-            return c
-    return ""
+    sec = cfg.get("tg_secret")
+    if not sec or len(sec) != 32:
+        sec = os.urandom(16).hex()
+        cfg["tg_secret"] = sec
+        save_config(cfg)
+    return sec
 
 
-def tgws_running():
+def tg_get_port():
     try:
-        out = run_hidden(["tasklist", "/FI", f"IMAGENAME eq {TGWS_EXE_NAME}"]).stdout
-        return TGWS_EXE_NAME.lower() in out.lower()
+        return int(load_config().get("tg_port", TG_DEFAULT_PORT))
     except Exception:
-        return False
+        return TG_DEFAULT_PORT
 
 
-def tgws_start(path):
-    if not path or not os.path.exists(path):
-        raise FileNotFoundError(path)
-    return subprocess.Popen(
-        [path], cwd=os.path.dirname(path) or None,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        startupinfo=_startupinfo(), creationflags=CREATE_NO_WINDOW,
-    )
+def tg_proxy_url():
+    return (f"tg://proxy?server={TG_DEFAULT_HOST}&port={tg_get_port()}"
+            f"&secret=dd{tg_get_secret()}")
 
 
-def tgws_stop():
-    run_hidden(["taskkill", "/IM", TGWS_EXE_NAME, "/F"])
+def tg_proxy_running():
+    return bool(_tg_thread and _tg_thread.is_alive())
+
+
+def tg_last_error():
+    return _tg_error
+
+
+def tg_proxy_start():
+    """Запустить встроенный MTProto-WS-прокси в фоновом потоке."""
+    global _tg_thread, _tg_async, _tg_error
+    if tg_proxy_running():
+        return
+    _tg_error = ""
+    from tgproxy.tg_ws_proxy import _run
+    from tgproxy.config import proxy_config
+    proxy_config.host = TG_DEFAULT_HOST
+    proxy_config.port = tg_get_port()
+    proxy_config.secret = tg_get_secret()
+
+    def runner():
+        global _tg_async, _tg_error
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        ev = asyncio.Event()
+        _tg_async = (loop, ev)
+        try:
+            loop.run_until_complete(_run(stop_event=ev))
+        except Exception as exc:
+            _tg_error = repr(exc)
+        finally:
+            try:
+                loop.close()
+            except Exception:
+                pass
+            _tg_async = None
+
+    _tg_thread = threading.Thread(target=runner, daemon=True, name="tg-proxy")
+    _tg_thread.start()
+
+
+def tg_proxy_stop():
+    global _tg_thread, _tg_async
+    if _tg_async:
+        loop, ev = _tg_async
+        try:
+            loop.call_soon_threadsafe(ev.set)
+        except Exception:
+            pass
+        if _tg_thread:
+            _tg_thread.join(timeout=5)
+    _tg_thread = None
 
 
 # --------------------------------------------------------------------------- #

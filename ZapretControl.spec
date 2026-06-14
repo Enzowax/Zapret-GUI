@@ -9,7 +9,7 @@ PyInstaller spec: самодостаточный ZapretControl.exe.
 """
 import os
 import glob
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 ROOT = os.path.abspath(SPECPATH)
 
@@ -30,12 +30,8 @@ for name in ("test zapret.ps1", "targets.txt"):
 if os.path.exists(os.path.join(ROOT, "presets.json")):
     datas.append((os.path.join(ROOT, "presets.json"), "."))
 
-# TgWsProxy — из корня проекта или с рабочего стола
-for cand in (os.path.join(ROOT, "TgWsProxy_windows.exe"),
-             os.path.join(os.path.expanduser("~"), "Desktop", "TgWsProxy_windows.exe")):
-    if os.path.exists(cand):
-        datas.append((cand, "."))
-        break
+# Telegram-прокси теперь вшит как Python-пакет tgproxy (см. hiddenimports),
+# отдельный TgWsProxy.exe больше не нужен.
 
 ctk_datas, ctk_binaries, ctk_hidden = collect_all("customtkinter")
 datas += ctk_datas
@@ -45,7 +41,8 @@ a = Analysis(
     pathex=[ROOT],
     binaries=ctk_binaries,
     datas=datas,
-    hiddenimports=ctk_hidden + ["darkdetect", "zapret_core"],
+    hiddenimports=ctk_hidden + ["darkdetect", "zapret_core"]
+                  + collect_submodules("tgproxy"),
     hookspath=[], runtime_hooks=[], excludes=[], noarchive=False,
 )
 pyz = PYZ(a.pure)
