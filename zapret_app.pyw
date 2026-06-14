@@ -105,6 +105,8 @@ class ZapretApp(ctk.CTk):
         threading.Thread(target=self._watchdog_loop, daemon=True).start()
         if self.cfg.get("autostart_bypass"):
             self.after(1400, self._autostart_bypass)
+        if zc.xbox_fix_enabled():
+            threading.Thread(target=self._xbox_startup_refresh, daemon=True).start()
         self._setup_tray()
         self.protocol("WM_DELETE_WINDOW", self._on_x)
 
@@ -329,8 +331,8 @@ class ZapretApp(ctk.CTk):
         if _doh["enabled"]:
             self.doh_switch.select()
 
-        c = self._card_row(p, "🕹", "Не ломать Xbox / Microsoft",
-                           "Исключить домены Microsoft/Xbox из обхода (рекомендуется)")
+        c = self._card_row(p, "🕹", "Фикс Xbox / Microsoft",
+                           "Обход DNS-подмены (ошибка 0x80a40401) + исключение из desync")
         self.xbox_switch = ctk.CTkSwitch(c, text="", command=self._on_xbox_toggle,
                                          progress_color=ACCENT, button_color="#dfe3e8")
         self.xbox_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
@@ -1152,9 +1154,25 @@ class ZapretApp(ctk.CTk):
     def _on_xbox_toggle(self):
         en = bool(self.xbox_switch.get())
         zc.set_xbox_fix(en)
-        self.log_msg(("Xbox/Microsoft исключены из обхода"
-                      if en else "Xbox/Microsoft больше не исключаются")
-                     + ". Перезапустите обход, чтобы применить.")
+        self.log_msg("Применяю фикс Xbox/Microsoft…" if en
+                     else "Убираю фикс Xbox/Microsoft…")
+
+        def worker():
+            ok, msg = zc.xbox_dns_refresh()
+            self.log_msg(("[Xbox] " if ok else "[Xbox][!] ") + msg)
+            if en:
+                self.log_msg("Если обход запущен — перезапустите его, "
+                             "чтобы применить исключение из desync.")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _xbox_startup_refresh(self):
+        try:
+            ok, msg = zc.xbox_dns_refresh()
+            if ok:
+                self.log_msg("[Xbox] " + msg)
+        except Exception:
+            pass
 
     def on_tg_copy(self):
         link = zc.tg_proxy_url()

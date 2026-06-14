@@ -73,7 +73,7 @@ IPSET_URL = ("https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/
              "refs/heads/main/.service/ipset-service.txt")
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.6.0"
+APP_VERSION = "2.7.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -1038,5 +1038,99 @@ def set_xbox_fix(enabled):
 
 
 def ensure_xbox_fix():
-    """Применить текущую настройку Xbox-фикса при старте (идемпотентно)."""
+    """Применить настройку исключения Xbox при старте (быстро, локально)."""
     set_xbox_fix(xbox_fix_enabled())
+
+
+# --- обход DNS-подмены Xbox (ошибка 0x80a40401): правильные IP в hosts ----- #
+# Провайдеры травят DNS auth-доменов Xbox (отдают мёртвый IP -> ETIMEDOUT).
+# Резолвим их через DoH (правильный IP) и прописываем в системный hosts.
+HOSTS_FILE = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                          "System32", "drivers", "etc", "hosts")
+HOSTS_BEGIN = "# >>> ZapretGUI Xbox fix >>>"
+HOSTS_END = "# <<< ZapretGUI Xbox fix <<<"
+XBOX_DNS_DOMAINS = [
+    "xsts.auth.xboxlive.com", "user.auth.xboxlive.com",
+    "device.auth.xboxlive.com", "title.auth.xboxlive.com",
+    "login.live.com",
+]
+
+
+def _doh_resolve(host, timeout=8):
+    """Получить A-записи host через публичный DoH (минуя подмену DNS провайдера)."""
+    for url in (f"https://cloudflare-dns.com/dns-query?name={host}&type=A",
+                f"https://dns.google/resolve?name={host}&type=A"):
+        try:
+            req = urllib.request.Request(
+                url, headers={"accept": "application/dns-json", "User-Agent": "ZapretGUI"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            ips = [a["data"] for a in data.get("Answer", []) if a.get("type") == 1]
+            if ips:
+                return ips
+        except Exception:
+            continue
+    return []
+
+
+def _hosts_read():
+    try:
+        with open(HOSTS_FILE, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def _hosts_strip_block(text):
+    pat = re.escape(HOSTS_BEGIN) + r".*?" + re.escape(HOSTS_END) + r"\r?\n?"
+    return re.sub(pat, "", text, flags=re.S)
+
+
+def _hosts_parse_block(text):
+    m = re.search(re.escape(HOSTS_BEGIN) + r"(.*?)" + re.escape(HOSTS_END), text, re.S)
+    cur = {}
+    if m:
+        for line in m.group(1).splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and not parts[0].startswith("#"):
+                cur[parts[1]] = parts[0]
+    return cur
+
+
+def xbox_dns_refresh():
+    """Прописать/убрать правильные IP Xbox-доменов в hosts (по настройке xbox_fix).
+    Возвращает (ok, сообщение). Требует прав администратора."""
+    text = _hosts_read()
+    existing = _hosts_parse_block(text)
+    base = _hosts_strip_block(text).rstrip("\r\n")
+
+    if not xbox_fix_enabled():
+        new = (base + "\n") if base.strip() else ""
+        try:
+            with open(HOSTS_FILE, "w", encoding="utf-8") as f:
+                f.write(new)
+            run_hidden(["ipconfig", "/flushdns"])
+            return True, "записи Xbox убраны из hosts"
+        except Exception as e:
+            return False, f"нет доступа к hosts: {e}"
+
+    entries = {}
+    for d in XBOX_DNS_DOMAINS:
+        ips = _doh_resolve(d)
+        ip = ips[0] if ips else existing.get(d)   # при сбое DoH не теряем рабочую запись
+        if ip:
+            entries[d] = ip
+    if not entries:
+        return False, "не удалось получить IP (нет сети/DoH)"
+
+    block = (HOSTS_BEGIN + "\n"
+             + "\n".join(f"{ip} {d}" for d, ip in entries.items())
+             + "\n" + HOSTS_END)
+    new = (base + "\n\n" + block + "\n") if base.strip() else (block + "\n")
+    try:
+        with open(HOSTS_FILE, "w", encoding="utf-8") as f:
+            f.write(new)
+        run_hidden(["ipconfig", "/flushdns"])
+        return True, f"в hosts прописаны IP для {len(entries)} Xbox-доменов"
+    except Exception as e:
+        return False, f"нет доступа к hosts: {e}"
