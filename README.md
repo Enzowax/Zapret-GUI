@@ -53,7 +53,7 @@ build_exe.bat
 
 ## Лицензии и благодарности
 - Движок `winws`/WinDivert и стратегии — проект zapret (bol-van) и сборка
-  Flowseal/zapret-discord-youtube.
+  [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube).
 - Встроенный Telegram-прокси — пакет `tgproxy/`, взят из открытого проекта
   [Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy) (лицензия MIT,
   см. `tgproxy/LICENSE`). Используется только ядро прокси (без отдельного exe).
