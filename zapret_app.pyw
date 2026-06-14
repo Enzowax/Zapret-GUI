@@ -172,7 +172,7 @@ class ZapretApp(ctk.CTk):
         try:
             from PIL import Image
             self._logo_img = ctk.CTkImage(Image.open(self._asset("icon.png")),
-                                          size=(30, 30))
+                                          size=(42, 42))
             ctk.CTkLabel(head, text="", image=self._logo_img).pack(side="left")
         except Exception:
             ctk.CTkLabel(head, text="⚡", font=(FONT, 24),
