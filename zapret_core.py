@@ -73,7 +73,7 @@ IPSET_URL = ("https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/
              "refs/heads/main/.service/ipset-service.txt")
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -760,6 +760,19 @@ def tg_get_port():
         return TG_DEFAULT_PORT
 
 
+def set_tg_port(port):
+    cfg = load_config()
+    cfg["tg_port"] = int(port)
+    save_config(cfg)
+
+
+def tg_regenerate_secret():
+    cfg = load_config()
+    cfg["tg_secret"] = os.urandom(16).hex()
+    save_config(cfg)
+    return cfg["tg_secret"]
+
+
 def tg_proxy_url():
     return (f"tg://proxy?server={TG_DEFAULT_HOST}&port={tg_get_port()}"
             f"&secret=dd{tg_get_secret()}")
@@ -872,3 +885,89 @@ def make_support_bundle():
         except Exception:
             pass
     return path
+
+
+# --------------------------------------------------------------------------- #
+#  Шифрованный DNS (DoH) — Фаза 4
+# --------------------------------------------------------------------------- #
+DOH_PROVIDERS = {
+    "cloudflare": (["1.1.1.1", "1.0.0.1"], "https://cloudflare-dns.com/dns-query"),
+    "google":     (["8.8.8.8", "8.8.4.4"], "https://dns.google/dns-query"),
+}
+
+
+def _ps(script, timeout=40):
+    return run_hidden(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                       "-Command", script], timeout=timeout)
+
+
+def doh_status():
+    cfg = load_config()
+    return {"enabled": bool(cfg.get("doh_enabled")),
+            "provider": cfg.get("doh_provider", "cloudflare")}
+
+
+def doh_enable(provider="cloudflare"):
+    """Перевести системный DNS активных адаптеров на провайдера с DoH.
+    Предыдущие DNS сохраняются для восстановления."""
+    ips, tmpl = DOH_PROVIDERS.get(provider, DOH_PROVIDERS["cloudflare"])
+    ps_ips = ",".join(f"'{x}'" for x in ips)
+    script = (
+        f"$ips=@({ps_ips}); $tmpl='{tmpl}'\n"
+        "foreach($ip in $ips){ try{ Add-DnsClientDohServerAddress -ServerAddress $ip "
+        "-DohTemplate $tmpl -AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction Stop }"
+        "catch{ try{ Set-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $tmpl "
+        "-AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction SilentlyContinue }catch{} } }\n"
+        "$prev=@{}\n"
+        "foreach($a in (Get-NetAdapter | Where-Object {$_.Status -eq 'Up'})){\n"
+        "  $cur=(Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 "
+        "-ErrorAction SilentlyContinue).ServerAddresses\n"
+        "  $prev[[string]$a.ifIndex]=($cur -join ',')\n"
+        "  Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses $ips "
+        "-ErrorAction SilentlyContinue\n"
+        "}\n"
+        "Clear-DnsClientCache -ErrorAction SilentlyContinue\n"
+        "$prev | ConvertTo-Json -Compress"
+    )
+    res = _ps(script)
+    prev = {}
+    try:
+        line = (res.stdout or "").strip().splitlines()
+        if line:
+            data = json.loads(line[-1])
+            if isinstance(data, dict):
+                prev = {str(k): str(v) for k, v in data.items()}
+    except Exception:
+        prev = {}
+    cfg = load_config()
+    cfg["doh_enabled"] = True
+    cfg["doh_provider"] = provider
+    cfg["doh_prev"] = prev
+    save_config(cfg)
+    return True
+
+
+def doh_disable():
+    """Восстановить прежний DNS адаптеров."""
+    cfg = load_config()
+    prev = cfg.get("doh_prev", {}) or {}
+    lines = []
+    for idx, servers in prev.items():
+        servers = (servers or "").strip()
+        if servers:
+            ipl = ",".join(f"'{s}'" for s in servers.split(",") if s.strip())
+            lines.append(f"Set-DnsClientServerAddress -InterfaceIndex {idx} "
+                         f"-ServerAddresses {ipl} -ErrorAction SilentlyContinue")
+        else:
+            lines.append(f"Set-DnsClientServerAddress -InterfaceIndex {idx} "
+                         f"-ResetServerAddresses -ErrorAction SilentlyContinue")
+    if not lines:
+        lines.append("foreach($a in (Get-NetAdapter | Where-Object {$_.Status -eq 'Up'}))"
+                     "{ Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex "
+                     "-ResetServerAddresses -ErrorAction SilentlyContinue }")
+    lines.append("Clear-DnsClientCache -ErrorAction SilentlyContinue")
+    _ps("\n".join(lines))
+    cfg["doh_enabled"] = False
+    cfg["doh_prev"] = {}
+    save_config(cfg)
+    return True

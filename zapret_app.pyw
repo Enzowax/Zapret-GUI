@@ -57,6 +57,11 @@ class ZapretApp(ctk.CTk):
         self.title(f"{APP_NAME} — обход Discord, YouTube, Telegram")
         self.geometry("1020x700")
         self.minsize(920, 620)
+        try:
+            self.iconbitmap(self._asset("icon.ico"))
+            self.after(300, lambda: self.iconbitmap(self._asset("icon.ico")))
+        except Exception:
+            pass
 
         self.cfg = zc.load_config()
         self.presets = zc.load_presets()
@@ -100,6 +105,10 @@ class ZapretApp(ctk.CTk):
             self.after(1400, self._autostart_bypass)
         self._setup_tray()
         self.protocol("WM_DELETE_WINDOW", self._on_x)
+
+    def _asset(self, name):
+        base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(base, "assets", name)
 
     def _init_ttk_style(self):
         style = ttk.Style()
@@ -300,6 +309,23 @@ class ZapretApp(ctk.CTk):
         if self.cfg.get("minimize_to_tray", True):
             self.tray_switch.select()
 
+        c = self._card_row(p, "🔒", "Шифрованный DNS (DoH)",
+                           "Системный DNS через DoH (часть блокировок — по DNS)")
+        box = ctk.CTkFrame(c, fg_color="transparent")
+        box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
+        _doh = zc.doh_status()
+        self.doh_provider = ctk.StringVar(
+            value={"cloudflare": "Cloudflare", "google": "Google"}.get(_doh["provider"], "Cloudflare"))
+        ctk.CTkSegmentedButton(box, values=["Cloudflare", "Google"],
+                               variable=self.doh_provider, font=(FONT, 12),
+                               selected_color=ACCENT,
+                               selected_hover_color=ACCENT_HOVER).pack(side="left", padx=6)
+        self.doh_switch = ctk.CTkSwitch(box, text="", command=self._on_doh_toggle,
+                                        progress_color=ACCENT, button_color="#dfe3e8")
+        self.doh_switch.pack(side="left", padx=10)
+        if _doh["enabled"]:
+            self.doh_switch.select()
+
         c = self._card_row(p, "🌐", "IPSet-фильтр", "Текущее состояние списка IP")
         self.ipset_label = ctk.CTkLabel(c, text="…", font=(FONT, 12), text_color=MUTED)
         self.ipset_label.grid(row=0, column=2, rowspan=2, padx=(0, 8), pady=12, sticky="e")
@@ -443,6 +469,17 @@ class ZapretApp(ctk.CTk):
                   "либо вручную — Telegram → Настройки → Данные и память → Прокси → "
                   "Добавить прокси → MTProto, и включите его.")
         ).pack(anchor="w", padx=12, pady=(6, 4))
+
+        self._section(p, "Настройки прокси")
+        c = self._card_row(p, "⚙", "Порт и секрет",
+                           "Порт локального прокси и MTProto-секрет")
+        box = ctk.CTkFrame(c, fg_color="transparent")
+        box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
+        self.tg_port_var = ctk.StringVar(value=str(zc.tg_get_port()))
+        ctk.CTkEntry(box, textvariable=self.tg_port_var, width=80, height=36,
+                     font=(FONT, 13), justify="center").pack(side="left", padx=4)
+        self._btn(box, "Применить", self.on_tg_apply_port, width=110).pack(side="left", padx=4)
+        self._btn(box, "Сменить секрет", self.on_tg_regen, width=150).pack(side="left", padx=4)
         return p
 
     # -- страница: Журнал ------------------------------------------------- #
@@ -778,13 +815,18 @@ class ZapretApp(ctk.CTk):
         zc.save_config(self.cfg)
 
     def _make_tray_image(self, running):
-        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        try:
+            base = Image.open(self._asset("icon.png")).convert("RGBA").resize((64, 64))
+        except Exception:
+            base = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            d = ImageDraw.Draw(base)
+            d.rounded_rectangle([4, 4, 60, 60], radius=14, fill=ACCENT)
+            d.polygon([(34, 11), (19, 38), (30, 38), (27, 53), (45, 25), (33, 25)],
+                      fill="#ffffff")
+        img = base.copy()
         d = ImageDraw.Draw(img)
-        d.rounded_rectangle([4, 4, 60, 60], radius=14, fill=ACCENT)
-        d.polygon([(34, 11), (19, 38), (30, 38), (27, 53), (45, 25), (33, 25)],
-                  fill="#ffffff")
         dot = GREEN if running else RED
-        d.ellipse([43, 43, 59, 59], fill=dot, outline="#15161c", width=2)
+        d.ellipse([44, 44, 60, 60], fill=dot, outline="#15161c", width=2)
         return img
 
     def _setup_tray(self):
@@ -997,6 +1039,41 @@ class ZapretApp(ctk.CTk):
             zc.tg_proxy_stop()
             self.log_msg("Telegram-прокси остановлен.")
             self.post(self.refresh_status)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_tg_apply_port(self):
+        try:
+            port = int(self.tg_port_var.get())
+            if not (1 <= port <= 65535):
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning("Прокси", "Порт должен быть числом 1–65535.")
+            return
+        zc.set_tg_port(port)
+        self.tg_link_var.set(zc.tg_proxy_url())
+        self.log_msg(f"Порт прокси: {port}. Перезапустите прокси, чтобы применить.")
+
+    def on_tg_regen(self):
+        zc.tg_regenerate_secret()
+        self.tg_link_var.set(zc.tg_proxy_url())
+        self.log_msg("Секрет прокси обновлён. Перезапустите прокси и обновите ссылку в Telegram.")
+
+    def _on_doh_toggle(self):
+        on = bool(self.doh_switch.get())
+        prov = {"Cloudflare": "cloudflare", "Google": "google"}[self.doh_provider.get()]
+        self.log_msg(("Включаю" if on else "Выключаю") + " шифрованный DNS (DoH)…")
+
+        def worker():
+            try:
+                if on:
+                    zc.doh_enable(prov)
+                    self.log_msg(f"DoH включён ({prov}): системный DNS переведён на провайдера.")
+                else:
+                    zc.doh_disable()
+                    self.log_msg("DoH выключен: прежний DNS восстановлен.")
+            except Exception as e:
+                self.log_msg(f"[ОШИБКА] DNS: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
 

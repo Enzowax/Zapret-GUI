@@ -30,6 +30,16 @@ for name in ("test zapret.ps1", "targets.txt"):
 if os.path.exists(os.path.join(ROOT, "presets.json")):
     datas.append((os.path.join(ROOT, "presets.json"), "."))
 
+# иконки (окно/трей)
+for _ic in ("icon.ico", "icon.png"):
+    _p = os.path.join(ROOT, "assets", _ic)
+    if os.path.exists(_p):
+        datas.append((_p, "assets"))
+
+ICON_FILE = os.path.join(ROOT, "assets", "icon.ico")
+if not os.path.exists(ICON_FILE):
+    ICON_FILE = None
+
 # Telegram-прокси теперь вшит как Python-пакет tgproxy (см. hiddenimports),
 # отдельный TgWsProxy.exe больше не нужен.
 
@@ -57,7 +67,7 @@ exe = EXE(
     name="ZapretControl",
     debug=False, bootloader_ignore_signals=False, strip=False, upx=True,
     console=False, disable_windowed_traceback=False,
-    uac_admin=True, icon=None,
+    uac_admin=True, icon=ICON_FILE,
 )
 coll = COLLECT(
     exe, a.binaries, a.datas,
