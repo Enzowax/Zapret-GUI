@@ -105,8 +105,7 @@ class ZapretApp(ctk.CTk):
         threading.Thread(target=self._watchdog_loop, daemon=True).start()
         if self.cfg.get("autostart_bypass"):
             self.after(1400, self._autostart_bypass)
-        if zc.xbox_fix_enabled():
-            threading.Thread(target=self._xbox_startup_refresh, daemon=True).start()
+        self.after(900, self._first_run_wizard)
         self._setup_tray()
         self.protocol("WM_DELETE_WINDOW", self._on_x)
 
@@ -331,13 +330,6 @@ class ZapretApp(ctk.CTk):
         if _doh["enabled"]:
             self.doh_switch.select()
 
-        c = self._card_row(p, "🕹", "Фикс Xbox / Microsoft",
-                           "Обход DNS-подмены (ошибка 0x80a40401) + исключение из desync")
-        self.xbox_switch = ctk.CTkSwitch(c, text="", command=self._on_xbox_toggle,
-                                         progress_color=ACCENT, button_color="#dfe3e8")
-        self.xbox_switch.grid(row=0, column=2, rowspan=2, padx=24, pady=12)
-        if zc.xbox_fix_enabled():
-            self.xbox_switch.select()
 
         c = self._card_row(p, "🌐", "IPSet-фильтр", "Текущее состояние списка IP")
         self.ipset_label = ctk.CTkLabel(c, text="…", font=(FONT, 12), text_color=MUTED)
@@ -384,10 +376,8 @@ class ZapretApp(ctk.CTk):
             ctk.CTkCheckBox(box, text=zc.AUTO_SERVICE_LABELS[key], variable=var,
                             font=(FONT, 13), fg_color=ACCENT,
                             hover_color=ACCENT_HOVER).pack(side="left", padx=12)
-        self.auto_stop_first = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(box, text="Остановиться на первой полностью рабочей",
-                        variable=self.auto_stop_first, font=(FONT, 13),
-                        fg_color=ACCENT, hover_color=ACCENT_HOVER).pack(side="left", padx=18)
+        ctk.CTkLabel(box, text="(собирается полный список рабочих стратегий)",
+                     font=(FONT, 11), text_color=MUTED).pack(side="left", padx=18)
 
         c = self._card(p)
         box = ctk.CTkFrame(c, fg_color="transparent")
@@ -743,6 +733,22 @@ class ZapretApp(ctk.CTk):
         self.log_msg("Авто-восстановление: "
                      + ("включено" if self.cfg["auto_recovery"] else "выключено"))
 
+    # -- первый запуск ---------------------------------------------------- #
+    def _first_run_wizard(self):
+        if self.cfg.get("first_run_done"):
+            return
+        self.cfg["first_run_done"] = True
+        zc.save_config(self.cfg)
+        if messagebox.askyesno(
+                "Добро пожаловать в Zapret GUI",
+                "Запустить авто-поиск рабочих стратегий?\n\n"
+                "Программа подберёт оптимальную стратегию обхода и составит "
+                "список запасных. Если активная стратегия перестанет работать, "
+                "приложение само переключится на другую рабочую.\n\n"
+                "Поиск займёт пару минут."):
+            self._show_page("auto")
+            self.after(400, self.on_auto_start)
+
     # -- авто-восстановление (watchdog) ----------------------------------- #
     def _autostart_bypass(self):
         if not zc.winws_running() and not zc.service_running():
@@ -750,6 +756,9 @@ class ZapretApp(ctk.CTk):
             self.on_start()
 
     def _watchdog_loop(self):
+        # фоновая проверка раз в WATCHDOG_INTERVAL; работает и для ручного запуска,
+        # и для службы. При отказе текущей стратегии — переключение на следующую
+        # рабочую из пула.
         fails = 0
         while not self._closing:
             for _ in range(int(zc.WATCHDOG_INTERVAL * 4)):
@@ -761,15 +770,21 @@ class ZapretApp(ctk.CTk):
             if not self.cfg.get("auto_recovery") or self.auto_running:
                 fails = 0
                 continue
-            proc = self.proc
-            if proc is None:
+
+            manual = bool(self.proc and self.proc.poll() is None)
+            proc_dead = bool(self.proc is not None and self.proc.poll() is not None)
+            service = zc.service_running()
+
+            if not manual and not service:
                 fails = 0
+                if proc_dead:   # мы запускали процесс, а он умер
+                    self.log_msg("[watchdog] winws.exe не работает — перезапуск")
+                    self._recover(switch=False)
                 continue
-            if proc.poll() is not None:
-                self.log_msg("[watchdog] winws.exe не работает — перезапуск обхода")
-                self._recover(switch=False)
-                fails = 0
-                continue
+
+            if not self.active_preset_name:   # для службы берём из конфига
+                self.active_preset_name = self.cfg.get("strategy")
+
             res = zc.check_hosts(zc.WATCHDOG_HEALTH_HOSTS, 3.0, attempts=1)
             ok = sum(1 for h in zc.WATCHDOG_HEALTH_HOSTS if res[h][0])
             if ok == 0:
@@ -782,6 +797,12 @@ class ZapretApp(ctk.CTk):
                 fails = 0
 
     def _watchdog_restart(self):
+        # перезапуск текущей стратегии (служба или ручной режим)
+        if zc.service_installed() and not (self.proc and self.proc.poll() is None):
+            zc.run_hidden(["net", "stop", zc.SERVICE_NAME])
+            zc.run_hidden(["net", "start", zc.SERVICE_NAME])
+            self.post(self.refresh_status)
+            return
         if not self.active_args:
             return
         try:
@@ -800,8 +821,8 @@ class ZapretApp(ctk.CTk):
             self.log_msg(f"[watchdog] не удалось перезапустить: {e}")
 
     def _recover(self, switch):
-        """Восстановление: переключиться на следующую рабочую стратегию из пула
-        (switch=True) либо перезапустить текущую (switch=False)."""
+        """Переключиться на следующую рабочую стратегию из пула (switch=True)
+        либо перезапустить текущую (switch=False)."""
         if switch:
             pool = self.cfg.get("recovery_pool", []) or []
             cands = [n for n in pool
@@ -819,7 +840,22 @@ class ZapretApp(ctk.CTk):
         if not preset:
             self._watchdog_restart()
             return
-        args = zc.build_args_str(preset["args"], zc.get_game_mode())
+        mode = zc.get_game_mode()
+
+        # режим службы — переустановить службу с новым пресетом
+        if zc.service_installed() and not (self.proc and self.proc.poll() is None):
+            ok, _log = zc.install_service(name, preset["args"], mode)
+            self.active_preset_name = name
+            self.cfg["strategy"] = name
+            zc.save_config(self.cfg)
+            self.post(lambda: self.strategy_var.set(name))
+            self.post(self.refresh_status)
+            self.log_msg(f"[watchdog] служба переустановлена со стратегией «{name}»"
+                         if ok else "[watchdog] не удалось переустановить службу")
+            return
+
+        # ручной режим
+        args = zc.build_args_str(preset["args"], mode)
         if not args:
             self._watchdog_restart()
             return
@@ -1151,28 +1187,6 @@ class ZapretApp(ctk.CTk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_xbox_toggle(self):
-        en = bool(self.xbox_switch.get())
-        zc.set_xbox_fix(en)
-        self.log_msg("Применяю фикс Xbox/Microsoft…" if en
-                     else "Убираю фикс Xbox/Microsoft…")
-
-        def worker():
-            ok, msg = zc.xbox_dns_refresh()
-            self.log_msg(("[Xbox] " if ok else "[Xbox][!] ") + msg)
-            if en:
-                self.log_msg("Если обход запущен — перезапустите его, "
-                             "чтобы применить исключение из desync.")
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _xbox_startup_refresh(self):
-        try:
-            ok, msg = zc.xbox_dns_refresh()
-            if ok:
-                self.log_msg("[Xbox] " + msg)
-        except Exception:
-            pass
 
     def on_tg_copy(self):
         link = zc.tg_proxy_url()
@@ -1288,10 +1302,6 @@ class ZapretApp(ctk.CTk):
                 avg = sum(lats) / len(lats) if lats else None
                 phase1.append((name, score, avg))
                 self.log_msg(f"  отсев: {name} — {score}/{len(quick_hosts)}")
-                if self.auto_stop_first.get() and score == len(quick_hosts):
-                    self.log_msg(f"Кандидат найден на отсеве: {name}")
-                    phase1 = [(name, score, avg)]
-                    break
 
             if self.auto_cancel:
                 candidates = []
@@ -1343,9 +1353,6 @@ class ZapretApp(ctk.CTk):
                     avg = lat_sum / lat_n if lat_n else None
                     self.post(lambda nm=name, p=dict(per), t=total, a=avg, cn=dict(counts):
                               self._auto_add_row(nm, p, t, a, cn))
-                    if self.auto_stop_first.get() and total == len(full_targets):
-                        self.log_msg(f"Полностью рабочая стратегия: {name}")
-                        break
             elif not self.auto_cancel:
                 self.log_msg("Рабочих пресетов на отсеве не найдено.")
         finally:
@@ -1391,9 +1398,16 @@ class ZapretApp(ctk.CTk):
         # пул запасных рабочих стратегий (для авто-восстановления), лучшие первыми
         pool = [n for n, _ in sorted(self._auto_full_pass, key=lambda x: x[1])]
         self.cfg["recovery_pool"] = pool
+        if pool:
+            self.cfg["auto_recovery"] = True   # есть запас — включаем восстановление
         zc.save_config(self.cfg)
         if pool:
-            self.log_msg(f"В запас для авто-восстановления: {len(pool)} рабочих стратегий.")
+            try:
+                self.recovery_switch.select()
+            except Exception:
+                pass
+            self.log_msg(f"В запас для авто-восстановления: {len(pool)} стратегий. "
+                         "Авто-восстановление включено.")
         if self.auto_best:
             name, total, avg = self.auto_best
             self.log_msg("=== Лучшая стратегия: %s (%d/%d, ~%s мс) ==="
@@ -1482,9 +1496,9 @@ def main():
         zc.generate_presets_json()
     except Exception:
         pass
-    # применить фикс Xbox/Microsoft (исключение доменов из обхода)
+    # откатить прежний (нерабочий) Xbox-фикс: убрать из hosts и списков
     try:
-        zc.ensure_xbox_fix()
+        zc.cleanup_xbox_legacy()
     except Exception:
         pass
     try:
