@@ -272,8 +272,6 @@ class ZapretApp(ctk.CTk):
         box.grid(row=0, column=0, columnspan=3, padx=12, pady=12, sticky="w")
         self._btn(box, "Диагностика", self.on_diagnostics).pack(side="left", padx=4)
         self._btn(box, "Тест соединения", self.on_test).pack(side="left", padx=4)
-        self._btn(box, "Менеджер (service.bat)", self.on_open_manager, width=200).pack(
-            side="left", padx=4)
         return p
 
     # -- страница: Авто-поиск --------------------------------------------- #
@@ -632,14 +630,6 @@ class ZapretApp(ctk.CTk):
         import subprocess
         subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
                           "-File", ps1])
-
-    def on_open_manager(self):
-        mgr = os.path.join(zc.BASE, "service.bat")
-        if not os.path.exists(mgr):
-            messagebox.showerror("Zapret", "service.bat не найден.")
-            return
-        import subprocess
-        subprocess.Popen(["cmd", "/c", "start", "", mgr])
 
     # -- обновление приложения -------------------------------------------- #
     def _startup_update_check(self):

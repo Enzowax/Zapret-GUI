@@ -8,6 +8,10 @@ __pycache__/
 ZapretControl*.exe
 TgWsProxy_windows.exe
 
+# Стратегии теперь в presets.json — .bat-файлы стратегий в репозитории не нужны
+general*.bat
+service.bat
+
 # Локальное состояние
 utils/app_config.json
 utils/gui_config.json

@@ -26,16 +26,9 @@ for name in ("test zapret.ps1", "targets.txt"):
     if os.path.exists(p):
         datas.append((p, "utils"))
 
-# декларативные пресеты
+# декларативные пресеты (единственный источник стратегий)
 if os.path.exists(os.path.join(ROOT, "presets.json")):
     datas.append((os.path.join(ROOT, "presets.json"), "."))
-
-# .bat-пресеты и service.bat (служебные .bat не тащим)
-_skip_bat = {"build_exe.bat", "запуск gui.bat"}
-for f in glob.glob(os.path.join(ROOT, "*.bat")):
-    if os.path.basename(f).lower() in _skip_bat:
-        continue
-    datas.append((f, "."))
 
 # TgWsProxy — из корня проекта или с рабочего стола
 for cand in (os.path.join(ROOT, "TgWsProxy_windows.exe"),
