@@ -40,9 +40,9 @@ SIDEBAR_BG = ("#e7e9f1", "#0f1014")
 CARD_BG = ("#ffffff", "#1f2129")
 CARD_HOVER = ("#e9ebf3", "#272a34")
 BTN_HOVER = ("#d8dbe6", "#343a46")     # ховер неакцентной кнопки
-SWITCH_OFF = ("#8d96a8", "#3a3f4b")    # дорожка выключ. тумблера (тёмная — виден белый бегунок)
+SWITCH_OFF = ("#7e889e", "#3a3f4b")    # дорожка выключ. тумблера (тёмная — виден белый бегунок)
 SWITCH_KNOB = ("#ffffff", "#f0f2f5")   # бегунок тумблера
-SWITCH_BORDER = ("#6f7789", "#4a4f5b") # обводка тумблера (чтобы не сливался)
+SWITCH_BORDER = ("#566076", "#4a4f5b") # обводка тумблера (чтобы не сливался)
 FIELD_BG = ("#dfe3ec", "#2a2e38")      # фон выпадающих списков/полей
 LOG_BG = ("#ffffff", "#101218")
 LOG_FG = ("#1a1c22", "#d7dbe0")
@@ -334,7 +334,7 @@ class ZapretApp(ctk.CTk):
                            "Запускать обход при старте приложения")
         self.autostart_switch = ctk.CTkSwitch(c, text="", command=self._on_autostart_toggle,
                                               progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-                                        border_width=1, border_color=SWITCH_BORDER)
+                                        border_width=2, border_color=SWITCH_BORDER)
         self.autostart_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
         if self.cfg.get("autostart_bypass"):
             self.autostart_switch.select()
@@ -343,7 +343,7 @@ class ZapretApp(ctk.CTk):
                            "Перезапускать обход, если он упал или перестал работать")
         self.recovery_switch = ctk.CTkSwitch(c, text="", command=self._on_recovery_toggle,
                                              progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-                                        border_width=1, border_color=SWITCH_BORDER)
+                                        border_width=2, border_color=SWITCH_BORDER)
         self.recovery_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
         if self.cfg.get("auto_recovery"):
             self.recovery_switch.select()
@@ -362,7 +362,7 @@ class ZapretApp(ctk.CTk):
                                selected_hover_color=ACCENT_HOVER).pack(side="left", padx=6)
         self.doh_switch = ctk.CTkSwitch(box, text="", command=self._on_doh_toggle,
                                         progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-                                        border_width=1, border_color=SWITCH_BORDER)
+                                        border_width=2, border_color=SWITCH_BORDER)
         self.doh_switch.pack(side="left", padx=10)
         if _doh["enabled"]:
             self.doh_switch.select()
@@ -537,7 +537,7 @@ class ZapretApp(ctk.CTk):
                            "Проверять новые версии при запуске")
         self.update_switch = ctk.CTkSwitch(c, text="", command=self._on_update_toggle,
                                            progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-                                        border_width=1, border_color=SWITCH_BORDER)
+                                        border_width=2, border_color=SWITCH_BORDER)
         self.update_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
         if zc.get_update_enabled():
             self.update_switch.select()
@@ -568,7 +568,7 @@ class ZapretApp(ctk.CTk):
                            "При закрытии окна прятать в трей (обход продолжит работать)")
         self.tray_switch = ctk.CTkSwitch(c, text="", command=self._on_tray_toggle,
                                          progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-                                        border_width=1, border_color=SWITCH_BORDER)
+                                        border_width=2, border_color=SWITCH_BORDER)
         self.tray_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
         if self.cfg.get("minimize_to_tray", True):
             self.tray_switch.select()
