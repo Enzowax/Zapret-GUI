@@ -73,7 +73,7 @@ IPSET_URL = ("https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/
              "refs/heads/main/.service/ipset-service.txt")
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.13.6"
+APP_VERSION = "2.14.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -1140,3 +1140,52 @@ def relaunch_app():
         f.write(script)
     subprocess.Popen(["cmd", "/c", bat], creationflags=CREATE_NO_WINDOW,
                      startupinfo=_startupinfo())
+
+
+# --------------------------------------------------------------------------- #
+#  Полный автозапуск при входе в систему (задача планировщика) — Фаза 5
+# --------------------------------------------------------------------------- #
+AUTOSTART_TASK = "ZapretGUI_Autostart"
+
+
+def autostart_enabled():
+    """Существует ли задача автозапуска."""
+    try:
+        out = _ps(f"if(Get-ScheduledTask -TaskName '{AUTOSTART_TASK}' "
+                  "-ErrorAction SilentlyContinue){'Y'}else{'N'}").stdout.strip()
+        return out == "Y"
+    except Exception:
+        return False
+
+
+def enable_autostart():
+    """Создать задачу: запуск приложения при входе в систему с правами админа
+    (без UAC-окна). Приложение получает аргумент --autostart. -> (ok, msg)."""
+    if not getattr(sys, "frozen", False):
+        return False, "автозапуск доступен только в собранном .exe"
+    exe = sys.executable.replace("'", "''")
+    script = (
+        f"$a=New-ScheduledTaskAction -Execute '{exe}' -Argument '--autostart';"
+        "$t=New-ScheduledTaskTrigger -AtLogOn;"
+        "$p=New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive "
+        "-RunLevel Highest;"
+        "$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "
+        "-DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero);"
+        f"try{{Register-ScheduledTask -TaskName '{AUTOSTART_TASK}' -Action $a "
+        "-Trigger $t -Principal $p -Settings $s -Force -ErrorAction Stop | Out-Null;'OK'}"
+        "catch{'FAIL:'+$_.Exception.Message}"
+    )
+    res = _ps(script)
+    out = (res.stdout or "").strip()
+    if "OK" in out:
+        return True, "задача автозапуска создана"
+    return False, out.replace("FAIL:", "") or (res.stderr or "не удалось").strip()
+
+
+def disable_autostart():
+    try:
+        _ps(f"Unregister-ScheduledTask -TaskName '{AUTOSTART_TASK}' "
+            "-Confirm:$false -ErrorAction SilentlyContinue")
+        return True
+    except Exception:
+        return False

@@ -79,8 +79,9 @@ APP_NAME = "Zapret GUI"
 
 
 class ZapretApp(ctk.CTk):
-    def __init__(self):
+    def __init__(self, autostart=False):
         super().__init__(fg_color=WIN_BG)
+        self.autostart_launch = autostart
         self.title(f"{APP_NAME} — обход Discord, YouTube, Telegram")
         self.geometry("1020x700")
         self.minsize(920, 620)
@@ -136,9 +137,13 @@ class ZapretApp(ctk.CTk):
         self.after(3000, self._auto_refresh)
         self.after(1500, self._startup_update_check)
         threading.Thread(target=self._watchdog_loop, daemon=True).start()
-        if self.cfg.get("autostart_bypass"):
+        if self.autostart_launch:
+            # запуск при входе в систему: поднять обход и прокси, свернуться в трей
+            self.after(800, self._autostart_full)
+        elif self.cfg.get("autostart_bypass"):
             self.after(1400, self._autostart_bypass)
-        self.after(900, self._first_run_wizard)
+        if not self.autostart_launch:
+            self.after(900, self._first_run_wizard)
         self._setup_tray()
         self.protocol("WM_DELETE_WINDOW", self._on_x)
 
@@ -573,6 +578,18 @@ class ZapretApp(ctk.CTk):
         if self.cfg.get("minimize_to_tray", True):
             self.tray_switch.select()
 
+        c = self._card_row(p, "🚀", "Полный автозапуск при включении ПК",
+                           "Приложение, обход и Telegram-прокси стартуют при входе "
+                           "в систему (свернётся в трей)")
+        self.full_autostart_switch = ctk.CTkSwitch(
+            c, text="", command=self._on_full_autostart_toggle,
+            progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
+            border_width=2, border_color=SWITCH_BORDER)
+        self.full_autostart_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20),
+                                        pady=12, sticky="e")
+        if zc.autostart_enabled():
+            self.full_autostart_switch.select()
+
         self._section(p, "Антивирус")
         c = self._card_row(p, "🛡", "Windows Defender",
                            "Добавить папку в исключения — меньше ложных срабатываний AV")
@@ -850,6 +867,19 @@ class ZapretApp(ctk.CTk):
             self.log_msg("Автозапуск обхода…")
             self.on_start()
 
+    def _autostart_proxy(self):
+        if not zc.tg_proxy_running():
+            self.log_msg("Автозапуск Telegram-прокси…")
+            threading.Thread(target=zc.tg_proxy_start, daemon=True).start()
+
+    def _autostart_full(self):
+        # запуск при входе в систему: обход + прокси + сворачивание в трей
+        self.log_msg("Полный автозапуск (вход в систему)…")
+        if self.tray is not None:
+            self.after(300, self.withdraw)
+        self._autostart_bypass()
+        self._autostart_proxy()
+
     def _watchdog_loop(self):
         # фоновая проверка раз в WATCHDOG_INTERVAL; работает и для ручного запуска,
         # и для службы. При отказе текущей стратегии — переключение на следующую
@@ -1062,6 +1092,25 @@ class ZapretApp(ctk.CTk):
     def _on_tray_toggle(self):
         self.cfg["minimize_to_tray"] = bool(self.tray_switch.get())
         zc.save_config(self.cfg)
+
+    def _on_full_autostart_toggle(self):
+        on = bool(self.full_autostart_switch.get())
+        self.log_msg("Настройка полного автозапуска…")
+
+        def worker():
+            if on:
+                ok, msg = zc.enable_autostart()
+                if ok:
+                    self.log_msg("Полный автозапуск включён: приложение, обход и "
+                                 "Telegram-прокси будут стартовать при входе в систему.")
+                else:
+                    self.log_msg(f"[!] Автозапуск: {msg}")
+                    self.post(lambda: self.full_autostart_switch.deselect())
+            else:
+                zc.disable_autostart()
+                self.log_msg("Полный автозапуск выключен.")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _make_tray_image(self, running):
         try:
@@ -1660,7 +1709,7 @@ def main():
         os.chdir(zc.BASE)
     except Exception:
         pass
-    app = ZapretApp()
+    app = ZapretApp(autostart=("--autostart" in sys.argv))
     if copied:
         app.log_msg(f"Развёрнуто встроенных файлов: {len(copied)} (папка: {zc.BASE})")
     app.mainloop()
