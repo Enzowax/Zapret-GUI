@@ -109,6 +109,8 @@ class ZapretApp(ctk.CTk):
         self.auto_cancel = False
         self.auto_best = None
         self.auto_total_targets = 0
+        self._auto_autoapply = False     # авто-применить лучшую (запуск из watchdog)
+        self._health_busy = False
 
         # Фаза 3: авто-восстановление / логи / завершение
         self._closing = False
@@ -136,6 +138,8 @@ class ZapretApp(ctk.CTk):
         self.refresh_status()
         self.after(3000, self._auto_refresh)
         self.after(1500, self._startup_update_check)
+        self.after(2500, self._health_auto)
+        self.after(4000, self._startup_lists_check)
         threading.Thread(target=self._watchdog_loop, daemon=True).start()
         if self.autostart_launch:
             # запуск при входе в систему: поднять обход и прокси, свернуться в трей
@@ -190,7 +194,8 @@ class ZapretApp(ctk.CTk):
         ctk.CTkLabel(ttl, text="by Enzowax", font=(FONT, 11),
                      text_color=MUTED, anchor="w").pack(anchor="w")
 
-        for key, label in [("control", "🛡   Управление"), ("auto", "🔍   Авто-поиск"),
+        for key, label in [("control", "🛡   Управление"), ("sites", "➕   Свои сайты"),
+                           ("auto", "🔍   Авто-поиск"),
                            ("tgws", "✈   Telegram"), ("settings", "⚙   Настройки"),
                            ("log", "📜   Журнал")]:
             b = ctk.CTkButton(side, text=label, anchor="w", height=42, corner_radius=8,
@@ -214,6 +219,7 @@ class ZapretApp(ctk.CTk):
         self.container.grid_columnconfigure(0, weight=1)
 
         self.pages["control"] = self._build_control_page()
+        self.pages["sites"] = self._build_sites_page()
         self.pages["auto"] = self._build_auto_page()
         self.pages["tgws"] = self._build_tgws_page()
         self.pages["settings"] = self._build_settings_page()
@@ -284,6 +290,24 @@ class ZapretApp(ctk.CTk):
         self.ctl_status_sub = ctk.CTkLabel(c, text="", font=(FONT, 11),
                                            text_color=MUTED, anchor="w")
         self.ctl_status_sub.grid(row=1, column=1, sticky="nw", pady=(0, 14))
+
+        self._section(p, "Здоровье обхода")
+        c = self._card(p)
+        hb = ctk.CTkFrame(c, fg_color="transparent")
+        hb.grid(row=0, column=0, columnspan=4, padx=14, pady=14, sticky="w")
+        self.health_widgets = {}
+        for key, label in [("discord", "Discord"), ("youtube", "YouTube"),
+                           ("google", "Google")]:
+            cell = ctk.CTkFrame(hb, fg_color="transparent")
+            cell.pack(side="left", padx=(0, 22))
+            dot = ctk.CTkLabel(cell, text="●", font=(FONT, 18), text_color=MUTED)
+            dot.pack(side="left", padx=(0, 6))
+            txt = ctk.CTkLabel(cell, text=f"{label}: …", font=(FONT, 13),
+                               text_color=TEXT)
+            txt.pack(side="left")
+            self.health_widgets[key] = (dot, txt, label)
+        self._btn(hb, "Проверить", self.on_health_check, width=110).pack(
+            side="left", padx=10)
 
         self._section(p, "Запуск")
         c = self._card_row(p, "⚡", "Запуск обхода",
@@ -378,6 +402,14 @@ class ZapretApp(ctk.CTk):
         self._btn(c, "Обновить", self.on_update_ipset, width=110).grid(
             row=0, column=3, rowspan=2, padx=14, pady=12)
 
+        c = self._card_row(p, "📃", "Списки доменов",
+                           "Встроенные списки сайтов (Discord, YouTube и др.)")
+        self.lists_label = ctk.CTkLabel(c, text="", font=(FONT, 12), text_color=MUTED)
+        self.lists_label.grid(row=0, column=2, rowspan=2, padx=(0, 8), pady=12, sticky="e")
+        self._btn(c, "Обновить", self.on_update_lists, width=110).grid(
+            row=0, column=3, rowspan=2, padx=14, pady=12)
+        self._refresh_lists_label()
+
         self._section(p, "Инструменты")
         c = self._card(p)
         box = ctk.CTkFrame(c, fg_color="transparent")
@@ -394,6 +426,70 @@ class ZapretApp(ctk.CTk):
         self._btn(box2, "Импорт настроек", self.on_import_settings, width=160).pack(
             side="left", padx=4)
         return p
+
+    # -- страница: Свои сайты --------------------------------------------- #
+    def _build_sites_page(self):
+        p = self._page()
+        self._title(p, "Свои сайты для обхода",
+                    "Добавьте сюда домены сайтов, которые нужно пробивать (например, "
+                    "rutracker.org). Они дополняют встроенные списки. По одному домену "
+                    "в строке — подпапки и поддомены учитываются автоматически.")
+
+        self._section(p, "Список доменов")
+        c = self._card(p)
+        self.sites_box = ctk.CTkTextbox(c, height=300, font=("Consolas", 13),
+                                        fg_color=LOG_BG, text_color=LOG_FG,
+                                        border_width=0, wrap="none")
+        self.sites_box.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+        hint = ("Можно вставлять и ссылки целиком (https://site.com/...) — лишнее "
+                "уберётся само. www. и дубли отбрасываются.")
+        ctk.CTkLabel(c, text=hint, font=(FONT, 11), text_color=MUTED,
+                     anchor="w", justify="left", wraplength=720).pack(
+            fill="x", padx=14, pady=(0, 8))
+
+        c = self._card(p)
+        box = ctk.CTkFrame(c, fg_color="transparent")
+        box.grid(row=0, column=0, columnspan=3, padx=12, pady=12, sticky="w")
+        self._btn(box, "💾  Сохранить и применить", self.on_sites_save,
+                  accent=True, width=220).pack(side="left", padx=4)
+        self._btn(box, "Сбросить изменения", self._sites_load, width=170).pack(
+            side="left", padx=4)
+        self.sites_count = ctk.CTkLabel(box, text="", font=(FONT, 12),
+                                        text_color=MUTED)
+        self.sites_count.pack(side="left", padx=14)
+
+        self._sites_load()
+        return p
+
+    def _sites_load(self):
+        domains = zc.read_user_domains()
+        self.sites_box.delete("1.0", "end")
+        if domains:
+            self.sites_box.insert("1.0", "\n".join(domains) + "\n")
+        self.sites_count.configure(text=f"сейчас сохранено: {len(domains)}")
+
+    def on_sites_save(self):
+        raw = self.sites_box.get("1.0", "end")
+        lines = [ln for ln in raw.splitlines()]
+        clean = zc.write_user_domains(lines)
+        # перечитать и показать нормализованный результат
+        self.sites_box.delete("1.0", "end")
+        if clean:
+            self.sites_box.insert("1.0", "\n".join(clean) + "\n")
+        self.sites_count.configure(text=f"сохранено: {len(clean)}")
+        self.log_msg(f"[Свои сайты] сохранено доменов: {len(clean)}")
+
+        running = bool(self.proc and self.proc.poll() is None) or zc.service_running()
+        if not running:
+            messagebox.showinfo("Свои сайты",
+                                f"Сохранено доменов: {len(clean)}.\n"
+                                "Изменения применятся при следующем запуске обхода.")
+            return
+        if messagebox.askyesno("Свои сайты",
+                               f"Сохранено доменов: {len(clean)}.\n"
+                               "Перезапустить обход, чтобы применить сейчас?"):
+            self.log_msg("[Свои сайты] перезапуск обхода для применения списка…")
+            threading.Thread(target=self._watchdog_restart, daemon=True).start()
 
     # -- страница: Авто-поиск --------------------------------------------- #
     def _build_auto_page(self):
@@ -590,6 +686,39 @@ class ZapretApp(ctk.CTk):
         if zc.autostart_enabled():
             self.full_autostart_switch.select()
 
+        self._section(p, "Списки и обход")
+        c = self._card_row(p, "📃", "Автообновление списков",
+                           "Раз в неделю подтягивать свежие списки сайтов из upstream")
+        self.lists_auto_switch = ctk.CTkSwitch(
+            c, text="", command=self._on_lists_auto_toggle,
+            progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
+            border_width=2, border_color=SWITCH_BORDER)
+        self.lists_auto_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
+        if self.cfg.get("lists_auto_update"):
+            self.lists_auto_switch.select()
+
+        c = self._card_row(p, "🔁", "Авто-переподбор при сбое",
+                           "Если все запасные стратегии перестали работать — "
+                           "автоматически запустить авто-поиск и применить лучшую")
+        self.research_switch = ctk.CTkSwitch(
+            c, text="", command=self._on_research_toggle,
+            progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
+            border_width=2, border_color=SWITCH_BORDER)
+        self.research_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
+        if self.cfg.get("auto_research_on_fail"):
+            self.research_switch.select()
+
+        c = self._card_row(p, "🔔", "Уведомления",
+                           "Всплывающие сообщения о событиях обхода (переключение, "
+                           "восстановление, обновление списков)")
+        self.notif_switch = ctk.CTkSwitch(
+            c, text="", command=self._on_notifications_toggle,
+            progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
+            border_width=2, border_color=SWITCH_BORDER)
+        self.notif_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
+        if self.cfg.get("notifications", True):
+            self.notif_switch.select()
+
         self._section(p, "Антивирус")
         c = self._card_row(p, "🛡", "Windows Defender",
                            "Добавить папку в исключения — меньше ложных срабатываний AV")
@@ -619,6 +748,16 @@ class ZapretApp(ctk.CTk):
 
     def post(self, fn):
         self.ui_queue.put(fn)
+
+    def _notify(self, title, message):
+        """Всплывающее уведомление Windows через значок в трее (если включено)."""
+        if not self.cfg.get("notifications", True):
+            return
+        if self.tray is not None:
+            try:
+                self.tray.notify(message, title)
+            except Exception:
+                pass
 
     def _poll_ui(self):
         try:
@@ -904,6 +1043,7 @@ class ZapretApp(ctk.CTk):
                 fails = 0
                 if proc_dead:   # мы запускали процесс, а он умер
                     self.log_msg("[watchdog] winws.exe не работает — перезапуск")
+                    self._notify("Обход перезапущен", "winws.exe был перезапущен.")
                     self._recover(switch=False)
                 continue
 
@@ -955,10 +1095,26 @@ class ZapretApp(ctk.CTk):
             if cands:
                 self.log_msg(f"[watchdog] «{self.active_preset_name}» не работает — "
                              f"переключаюсь на «{cands[0]}»")
+                self._notify("Обход переключён",
+                             f"«{self.active_preset_name}» не пробивал — включил «{cands[0]}».")
                 self._switch_to(cands[0])
                 return
-            self.log_msg("[watchdog] запасных рабочих стратегий нет — перезапуск текущей")
+            self.log_msg("[watchdog] запасных рабочих стратегий нет")
+            # пул исчерпан и связи нет: если разрешено — авто-переподбор стратегии
+            if self.cfg.get("auto_research_on_fail") and not self.auto_running:
+                self._trigger_auto_research()
+                return
         self._watchdog_restart()
+
+    def _trigger_auto_research(self):
+        """Запустить авто-поиск из watchdog (связь уже мертва — не мешаем сессии)
+        и автоматически применить найденную лучшую стратегию."""
+        if self.auto_running:
+            return
+        self._auto_autoapply = True
+        self.log_msg("[watchdog] запасные стратегии исчерпаны — запускаю авто-поиск…")
+        self._notify("Авто-поиск", "Обход перестал работать — подбираю новую стратегию.")
+        self.post(self.on_auto_start)
 
     def _switch_to(self, name):
         preset = self.preset_by_name.get(name)
@@ -1093,6 +1249,18 @@ class ZapretApp(ctk.CTk):
         self.cfg["minimize_to_tray"] = bool(self.tray_switch.get())
         zc.save_config(self.cfg)
 
+    def _on_lists_auto_toggle(self):
+        self.cfg["lists_auto_update"] = bool(self.lists_auto_switch.get())
+        zc.save_config(self.cfg)
+
+    def _on_research_toggle(self):
+        self.cfg["auto_research_on_fail"] = bool(self.research_switch.get())
+        zc.save_config(self.cfg)
+
+    def _on_notifications_toggle(self):
+        self.cfg["notifications"] = bool(self.notif_switch.get())
+        zc.save_config(self.cfg)
+
     def _on_full_autostart_toggle(self):
         on = bool(self.full_autostart_switch.get())
         self.log_msg("Настройка полного автозапуска…")
@@ -1186,6 +1354,76 @@ class ZapretApp(ctk.CTk):
             ok, msg = zc.update_ipset()
             self.log_msg(msg)
             self.post(self.refresh_status)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # -- здоровье обхода -------------------------------------------------- #
+    def on_health_check(self):
+        if getattr(self, "_health_busy", False):
+            return
+        threading.Thread(target=self._health_worker, daemon=True).start()
+
+    def _health_worker(self):
+        self._health_busy = True
+        try:
+            hosts = {k: zc.AUTO_QUICK_HOST[k] for k in self.health_widgets}
+            res = zc.check_hosts(list(hosts.values()), 3.0, attempts=1)
+            out = {k: res.get(h, (False, None)) for k, h in hosts.items()}
+            self.post(lambda o=out: self._apply_health(o))
+        except Exception:
+            pass
+        finally:
+            self._health_busy = False
+
+    def _apply_health(self, out):
+        for k, (ok, ms) in out.items():
+            if k not in self.health_widgets:
+                continue
+            dot, txt, label = self.health_widgets[k]
+            dot.configure(text_color=GREEN if ok else RED)
+            if ok:
+                txt.configure(text=f"{label}: {int(ms)} мс" if ms else f"{label}: ок")
+            else:
+                txt.configure(text=f"{label}: нет связи")
+
+    def _health_auto(self):
+        if self._closing:
+            return
+        self.on_health_check()
+        self.after(20000, self._health_auto)
+
+    def _startup_lists_check(self):
+        """Раз в неделю (если включено) подтянуть свежие списки из upstream."""
+        if self._closing or not zc.lists_update_due():
+            return
+        self.log_msg("[Списки] плановое автообновление…")
+        self.on_update_lists(silent=True, restart_if_running=True)
+
+    def _refresh_lists_label(self):
+        ts = zc.lists_last_update_ts()
+        if ts:
+            txt = "обновлено " + time.strftime("%d.%m.%Y", time.localtime(ts))
+        else:
+            txt = "встроенные"
+        try:
+            self.lists_label.configure(text=txt)
+        except Exception:
+            pass
+
+    def on_update_lists(self, silent=False, restart_if_running=False):
+        if not silent:
+            self.log_msg("Обновление списков доменов из upstream…")
+
+        def worker():
+            ok, msg = zc.update_lists()
+            self.log_msg(msg)
+            self.post(self._refresh_lists_label)
+            if ok:
+                self._notify("Списки обновлены", "Списки сайтов для обхода обновлены.")
+                if restart_if_running and (
+                        (self.proc and self.proc.poll() is None) or zc.service_running()):
+                    self.log_msg("Перезапуск обхода для применения новых списков…")
+                    self._watchdog_restart()
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1624,6 +1862,17 @@ class ZapretApp(ctk.CTk):
                     break
         else:
             self.log_msg("=== Авто-поиск завершён: рабочих стратегий не найдено ===")
+        # авто-применение (когда поиск запущен watchdog'ом из-за деградации)
+        if getattr(self, "_auto_autoapply", False):
+            self._auto_autoapply = False
+            if self.auto_best:
+                name = self.auto_best[0]
+                self.log_msg(f"[watchdog] применяю найденную стратегию «{name}»")
+                self._notify("Обход восстановлен", f"Включена стратегия «{name}».")
+                threading.Thread(target=lambda n=name: self._switch_to(n),
+                                 daemon=True).start()
+            else:
+                self._notify("Авто-поиск", "Рабочая стратегия не найдена.")
         self.refresh_status()
 
     def on_apply_best(self):

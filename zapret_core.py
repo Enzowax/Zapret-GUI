@@ -72,8 +72,19 @@ SERVICE_NAME = "zapret"
 IPSET_URL = ("https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/"
              "refs/heads/main/.service/ipset-service.txt")
 
+# Пользовательский список доменов для обхода (уже подключён во всех стратегиях
+# как --hostlist=...list-general-user.txt). Сюда пишем сайты, добавленные
+# пользователем (например, rutracker.org).
+USER_LIST_FILE = os.path.join(LISTS, "list-general-user.txt")
+
+# Автообновление дефолтных списков доменов из upstream (Flowseal).
+LIST_RAW_BASE = ("https://raw.githubusercontent.com/Flowseal/"
+                 "zapret-discord-youtube/refs/heads/main/lists/")
+LIST_UPDATE_FILES = ("list-general.txt", "list-exclude.txt", "list-google.txt")
+LISTS_UPDATE_INTERVAL_DAYS = 7
+
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.15.0"
+APP_VERSION = "2.16.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -654,6 +665,110 @@ def update_ipset():
         return True, f"IPSet обновлён: {n} строк."
     except Exception as e:
         return False, f"Ошибка обновления IPSet: {e}"
+
+
+# --------------------------------------------------------------------------- #
+#  Свои домены для обхода (list-general-user.txt) и автообновление списков
+# --------------------------------------------------------------------------- #
+def normalize_domain(raw):
+    """Привести введённую строку к голому домену: убрать схему, путь, порт,
+    www., привести к нижнему регистру. Вернёт '' если это не похоже на домен."""
+    s = (raw or "").strip().lower()
+    if not s or s[0] in "#;":
+        return ""
+    if "://" in s:
+        s = s.split("://", 1)[1]
+    s = s.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    s = s.split("@")[-1].split(":", 1)[0].strip().strip(".")
+    if s.startswith("www."):
+        s = s[4:]
+    if not s or "." not in s or " " in s:
+        return ""
+    if not re.match(r"^[a-z0-9.*_-]+$", s):
+        try:                                   # IDN (кириллица и т.п.) -> punycode
+            s = s.encode("idna").decode("ascii")
+        except Exception:
+            return ""
+    return s
+
+
+def read_user_domains():
+    """Список доменов из list-general-user.txt (без комментариев/пустых строк)."""
+    try:
+        with open(USER_LIST_FILE, encoding="utf-8", errors="replace") as f:
+            raw = f.read().splitlines()
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []
+    out = []
+    for ln in raw:
+        d = ln.strip()
+        if d and not d.startswith("#"):
+            out.append(d)
+    return out
+
+
+def write_user_domains(domains):
+    """Нормализовать, убрать дубли и записать пользовательские домены.
+    Возвращает итоговый отсортированный список того, что записано."""
+    seen, clean = set(), []
+    for d in domains:
+        nd = normalize_domain(d)
+        if nd and nd not in seen:
+            seen.add(nd)
+            clean.append(nd)
+    clean.sort()
+    os.makedirs(LISTS, exist_ok=True)
+    with open(USER_LIST_FILE, "w", encoding="utf-8") as f:
+        if clean:
+            f.write("\n".join(clean) + "\n")
+    return clean
+
+
+def update_lists():
+    """Скачать свежие дефолтные списки доменов из upstream (Flowseal).
+    Пользовательские *-user.txt и ipset не трогаются. -> (ok_any, сообщение)."""
+    parts, ok_any = [], False
+    for name in LIST_UPDATE_FILES:
+        try:
+            req = urllib.request.Request(
+                LIST_RAW_BASE + name,
+                headers={"Cache-Control": "no-cache", "User-Agent": "ZapretGUI"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                data = r.read()
+            if not data.strip():
+                parts.append(f"{name}: пусто")
+                continue
+            with open(os.path.join(LISTS, name), "wb") as f:
+                f.write(data)
+            n = len([x for x in data.decode("utf-8", "replace").splitlines()
+                     if x.strip() and not x.strip().startswith("#")])
+            parts.append(f"{name.replace('list-', '').replace('.txt', '')}: {n}")
+            ok_any = True
+        except Exception as e:
+            parts.append(f"{name}: ошибка ({e})")
+    if ok_any:
+        cfg = load_config()
+        cfg["lists_last_update"] = int(time.time())
+        save_config(cfg)
+    return ok_any, ("Списки обновлены — " if ok_any else "Не удалось обновить — ") + "; ".join(parts)
+
+
+def lists_last_update_ts():
+    try:
+        return int(load_config().get("lists_last_update", 0))
+    except Exception:
+        return 0
+
+
+def lists_update_due():
+    """True, если включено автообновление и прошёл интервал."""
+    cfg = load_config()
+    if not cfg.get("lists_auto_update"):
+        return False
+    last = int(cfg.get("lists_last_update", 0) or 0)
+    return (time.time() - last) >= LISTS_UPDATE_INTERVAL_DAYS * 86400
 
 
 def run_diagnostics():
