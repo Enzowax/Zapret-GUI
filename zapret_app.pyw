@@ -195,8 +195,8 @@ class ZapretApp(ctk.CTk):
                      text_color=MUTED, anchor="w").pack(anchor="w")
 
         for key, label in [("control", "🛡   Управление"), ("sites", "➕   Свои сайты"),
-                           ("auto", "🔍   Авто-поиск"),
-                           ("tgws", "✈   Telegram"), ("settings", "⚙   Настройки"),
+                           ("auto", "🔍   Авто-поиск"), ("tgws", "✈   Telegram"),
+                           ("diag", "🩺   Диагностика"), ("settings", "⚙   Настройки"),
                            ("log", "📜   Журнал")]:
             b = ctk.CTkButton(side, text=label, anchor="w", height=42, corner_radius=8,
                               fg_color="transparent", hover_color=CARD_HOVER,
@@ -222,6 +222,7 @@ class ZapretApp(ctk.CTk):
         self.pages["sites"] = self._build_sites_page()
         self.pages["auto"] = self._build_auto_page()
         self.pages["tgws"] = self._build_tgws_page()
+        self.pages["diag"] = self._build_diag_page()
         self.pages["settings"] = self._build_settings_page()
         self.pages["log"] = self._build_log_page()
 
@@ -231,6 +232,9 @@ class ZapretApp(ctk.CTk):
         self.pages[key].grid(row=0, column=0, sticky="nsew")
         for k, b in self.nav_buttons.items():
             b.configure(fg_color=ACCENT if k == key else "transparent")
+        if key == "diag" and not getattr(self, "_diag_loaded", False):
+            self._diag_loaded = True
+            self.on_diag_run()
 
     # -- конструкторы ----------------------------------------------------- #
     def _page(self):
@@ -617,6 +621,113 @@ class ZapretApp(ctk.CTk):
         self._btn(box, "Применить", self.on_tg_apply_port, width=110).pack(side="left", padx=4)
         self._btn(box, "Сменить секрет", self.on_tg_regen, width=150).pack(side="left", padx=4)
         return p
+
+    # -- страница: Диагностика -------------------------------------------- #
+    def _build_diag_page(self):
+        p = self._page()
+        self._title(p, "Диагностика и совместимость",
+                    "Проверка окружения: права, драйвер WinDivert, конфликты с другими "
+                    "обходами и сетевым ПО, порты, DNS, доступность сайтов. Рядом с "
+                    "проблемой — кнопка быстрого исправления.")
+
+        self._section(p, "Действия")
+        c = self._card(p)
+        box = ctk.CTkFrame(c, fg_color="transparent")
+        box.grid(row=0, column=0, columnspan=3, padx=12, pady=12, sticky="w")
+        self.btn_diag_run = self._btn(box, "🔄  Проверить заново", self.on_diag_run,
+                                      accent=True, width=190)
+        self.btn_diag_run.pack(side="left", padx=4)
+        self._btn(box, "Остановить конфликты", lambda: self.on_diag_fix("stop_conflicts"),
+                  width=190).pack(side="left", padx=4)
+        self._btn(box, "Сбросить WinDivert", lambda: self.on_diag_fix("reset_windivert"),
+                  width=180).pack(side="left", padx=4)
+        box2 = ctk.CTkFrame(c, fg_color="transparent")
+        box2.grid(row=1, column=0, columnspan=3, padx=12, pady=(0, 12), sticky="w")
+        self._btn(box2, "Перезапустить обход", self.on_diag_restart, width=190).pack(
+            side="left", padx=4)
+        self._btn(box2, "Сохранить отчёт", self.on_support_bundle, width=170).pack(
+            side="left", padx=4)
+
+        self._section(p, "Результаты проверки")
+        self.diag_list = ctk.CTkFrame(p, fg_color="transparent")
+        self.diag_list.pack(fill="x", padx=0, pady=0)
+        ctk.CTkLabel(self.diag_list, text="Нажмите «Проверить заново».",
+                     font=(FONT, 12), text_color=MUTED).pack(anchor="w", padx=8, pady=8)
+        return p
+
+    def on_diag_run(self):
+        if getattr(self, "_diag_busy", False):
+            return
+        self._diag_busy = True
+        try:
+            self.btn_diag_run.configure(state="disabled", text="Проверка…")
+        except Exception:
+            pass
+        for w in self.diag_list.winfo_children():
+            w.destroy()
+        ctk.CTkLabel(self.diag_list, text="Идёт проверка окружения…",
+                     font=(FONT, 12), text_color=MUTED).pack(anchor="w", padx=8, pady=8)
+
+        def worker():
+            try:
+                items = zc.diagnose()
+            except Exception as e:
+                items = [{"title": "Ошибка диагностики", "status": "bad",
+                          "detail": str(e), "fix": None}]
+            self.post(lambda: self._render_diag(items))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _render_diag(self, items):
+        self._diag_busy = False
+        try:
+            self.btn_diag_run.configure(state="normal", text="🔄  Проверить заново")
+        except Exception:
+            pass
+        for w in self.diag_list.winfo_children():
+            w.destroy()
+        colors = {"ok": GREEN, "warn": YELLOW, "bad": RED}
+        n_bad = sum(1 for it in items if it["status"] == "bad")
+        n_warn = sum(1 for it in items if it["status"] == "warn")
+        summary = ("Всё в порядке." if not n_bad and not n_warn
+                   else f"Проблемы: {n_bad} критич., {n_warn} предупр.")
+        ctk.CTkLabel(self.diag_list, text=summary, font=(FONT, 13, "bold"),
+                     text_color=(RED if n_bad else (YELLOW if n_warn else GREEN))).pack(
+            anchor="w", padx=8, pady=(2, 8))
+        for it in items:
+            row = ctk.CTkFrame(self.diag_list, corner_radius=10, fg_color=CARD_BG)
+            row.pack(fill="x", padx=4, pady=4)
+            row.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(row, text="●", font=(FONT, 18),
+                         text_color=colors.get(it["status"], MUTED)).grid(
+                row=0, column=0, rowspan=2, padx=(16, 12), pady=12)
+            ctk.CTkLabel(row, text=it["title"], font=(FONT, 14, "bold"),
+                         text_color=TEXT, anchor="w").grid(
+                row=0, column=1, sticky="sw", pady=(12, 0))
+            ctk.CTkLabel(row, text=it["detail"], font=(FONT, 11), text_color=MUTED,
+                         anchor="w", justify="left", wraplength=560).grid(
+                row=1, column=1, sticky="nw", pady=(0, 12))
+            if it.get("fix"):
+                self._btn(row, "Исправить", lambda k=it["fix"]: self.on_diag_fix(k),
+                          accent=True, width=120).grid(row=0, column=2, rowspan=2,
+                                                       padx=14, pady=12)
+
+    def on_diag_fix(self, key):
+        self.log_msg(f"[Диагностика] исправление: {key}")
+
+        def worker():
+            try:
+                msg = zc.apply_fix(key)
+            except Exception as e:
+                msg = f"ошибка: {e}"
+            self.log_msg(f"[Диагностика] {msg}")
+            self.post(self.on_diag_run)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_diag_restart(self):
+        self.log_msg("[Диагностика] перезапуск обхода…")
+        threading.Thread(target=self._watchdog_restart, daemon=True).start()
 
     # -- страница: Настройки приложения ----------------------------------- #
     def _build_settings_page(self):
@@ -1428,14 +1539,9 @@ class ZapretApp(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     def on_diagnostics(self):
-        self.log_msg("=== Диагностика ===")
-
-        def worker():
-            for ok, text in zc.run_diagnostics():
-                self.log_msg(("  [OK] " if ok else "  [!]  ") + text)
-            self.log_msg("=== Диагностика завершена ===")
-
-        threading.Thread(target=worker, daemon=True).start()
+        # кнопка из «Инструментов» открывает страницу диагностики и запускает проверку
+        self._show_page("diag")
+        self.on_diag_run()
 
     def on_test(self):
         ps1 = os.path.join(zc.UTILS, "test zapret.ps1")

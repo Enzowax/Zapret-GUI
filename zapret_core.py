@@ -84,7 +84,7 @@ LIST_UPDATE_FILES = ("list-general.txt", "list-exclude.txt", "list-google.txt")
 LISTS_UPDATE_INTERVAL_DAYS = 7
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.16.0"
+APP_VERSION = "2.17.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -93,6 +93,18 @@ GITHUB_RELEASES_PAGE = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/release
 
 CREATE_NO_WINDOW = 0x08000000
 CONFLICTING_SERVICES = ["GoodbyeDPI", "discordfix_zapret", "winws1", "winws2"]
+# Сторонние DPI-обходы (процессы), которые мешают нашему winws/WinDivert.
+# winws.exe и ZapretControl.exe сюда НЕ входят — это мы сами.
+DPI_CONFLICT_PROCS = ["goodbyedpi.exe", "byedpi.exe", "ciadpi.exe",
+                      "spoofdpi.exe", "zapret.exe"]
+# Сетевые «оптимизаторы»/драйверы, известные конфликтами с WinDivert.
+NIC_CONFLICT = {
+    "SmartByteNetworkService": "SmartByte (Dell)",
+    "KillerNetworkService": "Killer Networking",
+    "Killer Analytics Service": "Killer Analytics",
+    "RivetNetworking": "Rivet/Killer",
+    "cFosSpeed": "cFosSpeed",
+}
 
 # Цели авто-поиска. Проверяется TLS-рукопожатие с нужным SNI.
 AUTO_TARGETS = {
@@ -788,6 +800,140 @@ def run_diagnostics():
 
 
 # --------------------------------------------------------------------------- #
+#  Расширенная диагностика и авто-починка (Фаза 7)
+# --------------------------------------------------------------------------- #
+def _port_in_use(port):
+    import socket
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", int(port)))
+        return False
+    except OSError:
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def diagnose():
+    """Полная диагностика среды. -> список словарей:
+    {title, status: ok|warn|bad, detail, fix: ключ для apply_fix() или None}."""
+    items = []
+
+    def add(title, status, detail="", fix=None):
+        items.append({"title": title, "status": status, "detail": detail, "fix": fix})
+
+    admin = is_admin()
+    add("Права администратора", "ok" if admin else "bad",
+        "есть" if admin else "winws не сможет работать — запустите от администратора")
+
+    bfe = "RUNNING" in run_hidden(["sc", "query", "BFE"]).stdout.upper()
+    add("Base Filtering Engine (BFE)", "ok" if bfe else "bad",
+        "служба запущена" if bfe else "нужна для WinDivert — запустите службу",
+        None if bfe else "start_bfe")
+
+    sys_ok = os.path.exists(os.path.join(BIN, "WinDivert64.sys"))
+    dll_ok = os.path.exists(os.path.join(BIN, "WinDivert.dll"))
+    add("Файлы WinDivert", "ok" if (sys_ok and dll_ok) else "bad",
+        "WinDivert64.sys и WinDivert.dll на месте" if (sys_ok and dll_ok)
+        else "в bin\\ не хватает файлов драйвера")
+
+    wd_exists = run_hidden(["sc", "query", "WinDivert"]).returncode == 0
+    running = winws_running()
+    if wd_exists and not running:
+        add("Драйвер WinDivert", "warn",
+            "служба драйвера зависла от прошлого запуска", "reset_windivert")
+    else:
+        add("Драйвер WinDivert", "ok",
+            "загружен (обход работает)" if wd_exists
+            else "не загружен (норма, когда обход выключен)")
+
+    g = run_hidden(["netsh", "interface", "tcp", "show", "global"]).stdout.lower()
+    ts = "timestamps" in g and "enabled" in g
+    add("TCP timestamps", "ok" if ts else "warn",
+        "включены" if ts else "выключены — нужны некоторым стратегиям",
+        None if ts else "enable_ts")
+
+    found_svc = [s for s in CONFLICTING_SERVICES
+                 if run_hidden(["sc", "query", s]).returncode == 0]
+    add("Конфликтующие службы обхода", "ok" if not found_svc else "warn",
+        "не найдено" if not found_svc else "найдено: " + ", ".join(found_svc),
+        None if not found_svc else "stop_conflicts")
+
+    tl = run_hidden(["tasklist"]).stdout.lower()
+    found_proc = sorted({p for p in DPI_CONFLICT_PROCS if p in tl})
+    add("Сторонние DPI-программы", "ok" if not found_proc else "warn",
+        "не запущены" if not found_proc else "запущены: " + ", ".join(found_proc),
+        None if not found_proc else "stop_conflicts")
+
+    nic = [label for svc, label in NIC_CONFLICT.items()
+           if run_hidden(["sc", "query", svc]).returncode == 0]
+    add("Сетевые оптимизаторы", "ok" if not nic else "warn",
+        "не обнаружены" if not nic
+        else "обнаружено: " + ", ".join(nic) + " — могут мешать WinDivert")
+
+    port = tg_get_port()
+    if tg_proxy_running():
+        add(f"Порт Telegram-прокси ({port})", "ok", "занят нашим прокси")
+    elif _port_in_use(port):
+        add(f"Порт Telegram-прокси ({port})", "warn",
+            "занят другим процессом — смените порт в разделе «Telegram»")
+    else:
+        add(f"Порт Telegram-прокси ({port})", "ok", "свободен")
+
+    d = doh_status()
+    add("Шифрованный DNS (DoH)", "ok" if d.get("enabled") else "warn",
+        f"включён ({d.get('provider')})" if d.get("enabled")
+        else "выключен — можно включить на «Управлении»")
+
+    try:
+        res = check_hosts(["discord.com", "www.youtube.com"], 3.0, attempts=1)
+        okn = sum(1 for h in res if res[h][0])
+    except Exception:
+        okn = 0
+    add("Доступность Discord/YouTube", "ok" if okn == 2 else ("warn" if okn == 1 else "bad"),
+        f"{okn}/2 доступны по TLS")
+
+    return items
+
+
+def stop_conflicts():
+    """Остановить конфликтующие службы и процессы сторонних обходов."""
+    stopped = []
+    for s in CONFLICTING_SERVICES:
+        if run_hidden(["sc", "query", s]).returncode == 0:
+            run_hidden(["net", "stop", s])
+            run_hidden(["sc", "stop", s])
+            stopped.append(s)
+    for p in DPI_CONFLICT_PROCS:
+        if run_hidden(["taskkill", "/IM", p, "/F"]).returncode == 0:
+            stopped.append(p)
+    return ("Остановлено: " + ", ".join(sorted(set(stopped)))) if stopped \
+        else "Конфликтующих служб и процессов не найдено."
+
+
+def apply_fix(key):
+    """Выполнить авто-починку по ключу из diagnose()[...]['fix']. -> сообщение."""
+    if key == "start_bfe":
+        run_hidden(["sc", "config", "BFE", "start=", "auto"])
+        run_hidden(["net", "start", "BFE"])
+        return "BFE: запуск выполнен."
+    if key == "reset_windivert":
+        remove_windivert()
+        return "Драйвер WinDivert сброшен."
+    if key == "enable_ts":
+        run_hidden(["netsh", "interface", "tcp", "set", "global", "timestamps=enabled"])
+        return "TCP timestamps включены."
+    if key == "stop_conflicts":
+        return stop_conflicts()
+    return ""
+
+
+# --------------------------------------------------------------------------- #
 #  Самообновление через GitHub Releases
 # --------------------------------------------------------------------------- #
 def _version_tuple(v):
@@ -1061,8 +1207,10 @@ def make_support_bundle():
         "diagnostics:",
     ]
     try:
-        for ok, text in run_diagnostics():
-            diag.append(("  [OK] " if ok else "  [!]  ") + text)
+        mark = {"ok": "  [OK]  ", "warn": "  [!]   ", "bad": "  [BAD] "}
+        for it in diagnose():
+            diag.append(mark.get(it["status"], "  [?]   ")
+                        + f"{it['title']}: {it['detail']}")
     except Exception as e:
         diag.append(f"  diagnostics error: {e}")
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
