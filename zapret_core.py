@@ -73,7 +73,7 @@ IPSET_URL = ("https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/
              "refs/heads/main/.service/ipset-service.txt")
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.14.0"
+APP_VERSION = "2.15.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -112,6 +112,18 @@ RUNTIME_SUBDIRS = ("bin", "lists", "utils")
 RUNTIME_ROOT_FILES = ("presets.json",)
 # файлы, чья целостность критична (проверяются по SHA-256)
 INTEGRITY_SUBDIRS = ("bin",)
+# апстрим-дефолты (списки/утилиты), которые ДОСЫЛАЮТСЯ при обновлении сборки:
+# при смене версии один раз перезаписываются свежими из .exe. Пользовательские
+# *-user.txt и управляемый через тумблер ipset-all.txt здесь НЕ перечислены —
+# их трогать нельзя.
+REFRESH_DEFAULT_FILES = (
+    os.path.join("lists", "list-general.txt"),
+    os.path.join("lists", "list-google.txt"),
+    os.path.join("lists", "list-exclude.txt"),
+    os.path.join("lists", "ipset-exclude.txt"),
+    os.path.join("utils", "targets.txt"),
+    os.path.join("utils", "test zapret.ps1"),
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -183,6 +195,38 @@ def verify_runtime():
             except Exception:
                 pass
     return fixed
+
+
+def refresh_defaults():
+    """Досылает обновлённые апстрим-дефолты (домен-списки/утилиты) из встроенных
+    в .exe на уже существующую установку при обновлении версии.
+
+    В отличие от bin это не «целостность», а «свежие апстрим-данные»: перезапись
+    выполняется один раз на новую версию (метка defaults_version в конфиге),
+    чтобы не затирать ручные правки пользователя при каждом запуске. Файл
+    обновляется только если действительно отличается. Пользовательские
+    *-user.txt и управляемый тумблером ipset-all.txt не затрагиваются."""
+    src = _meipass()
+    if not src or not os.path.isdir(src):
+        return []
+    cfg = load_config()
+    if cfg.get("defaults_version") == APP_VERSION:
+        return []
+    refreshed = []
+    for rel in REFRESH_DEFAULT_FILES:
+        sp, dp = os.path.join(src, rel), os.path.join(BASE, rel)
+        if not os.path.isfile(sp):
+            continue
+        try:
+            if (not os.path.isfile(dp)) or _sha256(sp) != _sha256(dp):
+                os.makedirs(os.path.dirname(dp), exist_ok=True)
+                shutil.copy2(sp, dp)
+                refreshed.append(dp)
+        except Exception:
+            pass
+    cfg["defaults_version"] = APP_VERSION
+    save_config(cfg)
+    return refreshed
 
 
 # --------------------------------------------------------------------------- #

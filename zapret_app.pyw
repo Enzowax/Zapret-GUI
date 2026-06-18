@@ -1693,6 +1693,7 @@ def main():
     try:
         copied = zc.ensure_runtime()
         zc.verify_runtime()
+        zc.refresh_defaults()   # досыл свежих апстрим-списков при обновлении версии
     except Exception:
         pass
     # в режиме разработки создать presets.json из .bat, если его ещё нет

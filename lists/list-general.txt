@@ -45,5 +45,5 @@ ffzap.com
 betterttv.net
 7tv.app
 7tv.io
-rutracker.org
-modrinth.com
+localizeapi.com
+klipy.com
