@@ -83,8 +83,22 @@ LIST_RAW_BASE = ("https://raw.githubusercontent.com/Flowseal/"
 LIST_UPDATE_FILES = ("list-general.txt", "list-exclude.txt", "list-google.txt")
 LISTS_UPDATE_INTERVAL_DAYS = 7
 
+# Файл пользовательских исключений IP для winws (уже подключён во всех стратегиях
+# как --ipset-exclude=...ipset-exclude-user.txt).
+IPSET_EXCLUDE_USER_FILE = os.path.join(LISTS, "ipset-exclude-user.txt")
+# Лог встроенного Telegram-прокси.
+TG_PROXY_LOG = os.path.join(LOGS, "tg_proxy.log")
+# Официальные диапазоны Telegram (core.telegram.org/resources/cidr.txt, IPv4).
+# Исключаются из DPI-десинка winws: Telegram обслуживает встроенный прокси,
+# обходу (Discord/YouTube) трогать его соединения незачем — это вызывает обрывы.
+TELEGRAM_IP_RANGES = [
+    "91.105.192.0/23", "91.108.4.0/22", "91.108.8.0/22", "91.108.12.0/22",
+    "91.108.16.0/22", "91.108.20.0/22", "91.108.56.0/22",
+    "95.161.64.0/20", "149.154.160.0/20", "185.76.151.0/24",
+]
+
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.17.0"
+APP_VERSION = "2.18.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -783,6 +797,27 @@ def lists_update_due():
     return (time.time() - last) >= LISTS_UPDATE_INTERVAL_DAYS * 86400
 
 
+def ensure_telegram_bypass_exclude():
+    """Добавить диапазоны Telegram в ipset-exclude-user.txt, чтобы winws не
+    десинкал соединения встроенного Telegram-прокси. Идемпотентно.
+    -> True, если файл был изменён (значит обход стоит перезапустить)."""
+    try:
+        existing = []
+        if os.path.exists(IPSET_EXCLUDE_USER_FILE):
+            with open(IPSET_EXCLUDE_USER_FILE, encoding="utf-8", errors="replace") as f:
+                existing = [ln.strip() for ln in f if ln.strip()]
+        have = set(existing)
+        added = [r for r in TELEGRAM_IP_RANGES if r not in have]
+        if not added:
+            return False
+        os.makedirs(LISTS, exist_ok=True)
+        with open(IPSET_EXCLUDE_USER_FILE, "w", encoding="utf-8") as f:
+            f.write("\n".join(existing + added) + "\n")
+        return True
+    except Exception:
+        return False
+
+
 def run_diagnostics():
     out = []
     out.append(("RUNNING" in run_hidden(["sc", "query", "BFE"]).stdout.upper(),
@@ -1126,12 +1161,38 @@ def tg_last_error():
     return _tg_error
 
 
+def tg_proxy_log_path():
+    return TG_PROXY_LOG
+
+
+def _setup_proxy_logging():
+    """Перехватить внутренний логгер прокси в файл logs/tg_proxy.log
+    (приложение оконное — иначе логи прокси теряются). Идемпотентно."""
+    import logging
+    import logging.handlers
+    lg = logging.getLogger("tg-mtproto-proxy")
+    lg.setLevel(logging.INFO)
+    if any(getattr(h, "_zapret", False) for h in lg.handlers):
+        return
+    try:
+        os.makedirs(LOGS, exist_ok=True)
+        h = logging.handlers.RotatingFileHandler(
+            TG_PROXY_LOG, maxBytes=512 * 1024, backupCount=2, encoding="utf-8")
+        h.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-5s  %(message)s"))
+        h._zapret = True
+        lg.addHandler(h)
+        lg.propagate = False
+    except Exception:
+        pass
+
+
 def tg_proxy_start():
     """Запустить встроенный MTProto-WS-прокси в фоновом потоке."""
     global _tg_thread, _tg_async, _tg_error
     if tg_proxy_running():
         return
     _tg_error = ""
+    _setup_proxy_logging()
     from tgproxy.tg_ws_proxy import _run
     from tgproxy.config import proxy_config
     proxy_config.host = TG_DEFAULT_HOST
@@ -1217,7 +1278,7 @@ def make_support_bundle():
         z.writestr("diagnostics.txt", "\n".join(diag))
         if os.path.isdir(LOGS):
             for name in os.listdir(LOGS):
-                if name.endswith(".txt"):
+                if name.endswith(".txt") or name.endswith(".log"):
                     try:
                         z.write(os.path.join(LOGS, name), f"logs/{name}")
                     except Exception:

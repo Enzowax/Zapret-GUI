@@ -620,7 +620,25 @@ class ZapretApp(ctk.CTk):
                      font=(FONT, 13), justify="center").pack(side="left", padx=4)
         self._btn(box, "Применить", self.on_tg_apply_port, width=110).pack(side="left", padx=4)
         self._btn(box, "Сменить секрет", self.on_tg_regen, width=150).pack(side="left", padx=4)
+
+        self._section(p, "Диагностика прокси")
+        c = self._card_row(p, "📜", "Лог прокси",
+                           "Журнал соединений прокси — для разбора обрывов и сбросов")
+        self._btn(c, "Открыть лог", self.on_open_proxy_log, width=140).grid(
+            row=0, column=2, rowspan=2, padx=14, pady=12)
         return p
+
+    def on_open_proxy_log(self):
+        path = zc.tg_proxy_log_path()
+        if not os.path.exists(path):
+            messagebox.showinfo("Лог прокси",
+                                "Лог пока пуст. Запустите прокси и попользуйтесь "
+                                "Telegram — события появятся здесь:\n" + path)
+            return
+        try:
+            os.startfile(path)
+        except Exception as e:
+            messagebox.showerror("Лог прокси", str(e))
 
     # -- страница: Диагностика -------------------------------------------- #
     def _build_diag_page(self):
@@ -2049,6 +2067,9 @@ def main():
         copied = zc.ensure_runtime()
         zc.verify_runtime()
         zc.refresh_defaults()   # досыл свежих апстрим-списков при обновлении версии
+        # исключить Telegram из десинка winws (до автозапуска обхода), чтобы
+        # обход не рвал соединения встроенного Telegram-прокси
+        zc.ensure_telegram_bypass_exclude()
     except Exception:
         pass
     # в режиме разработки создать presets.json из .bat, если его ещё нет
