@@ -98,7 +98,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.18.0"
+APP_VERSION = "2.19.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -1141,6 +1141,16 @@ def set_tg_port(port):
     save_config(cfg)
 
 
+def tg_get_cfproxy():
+    return bool(load_config().get("tg_cfproxy", True))
+
+
+def tg_set_cfproxy(on):
+    cfg = load_config()
+    cfg["tg_cfproxy"] = bool(on)
+    save_config(cfg)
+
+
 def tg_regenerate_secret():
     cfg = load_config()
     cfg["tg_secret"] = os.urandom(16).hex()
@@ -1198,6 +1208,10 @@ def tg_proxy_start():
     proxy_config.host = TG_DEFAULT_HOST
     proxy_config.port = tg_get_port()
     proxy_config.secret = tg_get_secret()
+    # Запасной путь через публичные Cloudflare-воркеры (CF proxy). Их общий пул
+    # часто отдаёт HTTP 429 (rate limit) и вызывает кратковременные обрывы. Если
+    # прямые соединения к DC работают, фолбэк лучше отключить (тумблер в UI).
+    proxy_config.fallback_cfproxy = bool(load_config().get("tg_cfproxy", True))
 
     def runner():
         global _tg_async, _tg_error

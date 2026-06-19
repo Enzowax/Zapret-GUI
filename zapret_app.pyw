@@ -621,6 +621,18 @@ class ZapretApp(ctk.CTk):
         self._btn(box, "Применить", self.on_tg_apply_port, width=110).pack(side="left", padx=4)
         self._btn(box, "Сменить секрет", self.on_tg_regen, width=150).pack(side="left", padx=4)
 
+        c = self._card_row(p, "☁", "Запасной Cloudflare-прокси",
+                           "Резерв через публичные Cloudflare-воркеры. Их общий пул "
+                           "часто отдаёт 429 и вызывает обрывы — если Telegram и так "
+                           "работает, выключите, чтобы убрать моргание.")
+        self.cfproxy_switch = ctk.CTkSwitch(
+            c, text="", command=self._on_cfproxy_toggle,
+            progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
+            border_width=2, border_color=SWITCH_BORDER)
+        self.cfproxy_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
+        if zc.tg_get_cfproxy():
+            self.cfproxy_switch.select()
+
         self._section(p, "Диагностика прокси")
         c = self._card_row(p, "📜", "Лог прокси",
                            "Журнал соединений прокси — для разбора обрывов и сбросов")
@@ -1718,6 +1730,25 @@ class ZapretApp(ctk.CTk):
         zc.tg_regenerate_secret()
         self.tg_link_var.set(zc.tg_proxy_url())
         self.log_msg("Секрет прокси обновлён. Перезапустите прокси и обновите ссылку в Telegram.")
+
+    def _tg_restart(self):
+        """Перезапустить встроенный прокси (для применения настроек на лету)."""
+        def worker():
+            if zc.tg_proxy_running():
+                zc.tg_proxy_stop()
+                time.sleep(0.6)
+                zc.tg_proxy_start()
+                self.log_msg("Прокси перезапущен.")
+            self.post(self.refresh_status)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_cfproxy_toggle(self):
+        on = bool(self.cfproxy_switch.get())
+        zc.tg_set_cfproxy(on)
+        self.log_msg(("Запасной Cloudflare-прокси включён." if on
+                      else "Запасной Cloudflare-прокси выключен (меньше обрывов, "
+                           "если прямые соединения работают)."))
+        self._tg_restart()
 
     def _on_doh_toggle(self):
         on = bool(self.doh_switch.get())
