@@ -243,15 +243,25 @@ class ZapretApp(ctk.CTk):
         self.container.grid_rowconfigure(0, weight=1)
         self.container.grid_columnconfigure(0, weight=1)
 
-        self.pages["control"] = self._build_control_page()
-        self.pages["sites"] = self._build_sites_page()
-        self.pages["auto"] = self._build_auto_page()
-        self.pages["tgws"] = self._build_tgws_page()
-        self.pages["diag"] = self._build_diag_page()
-        self.pages["settings"] = self._build_settings_page()
-        self.pages["log"] = self._build_log_page()
+        self._page_builders = {
+            "control": self._build_control_page, "sites": self._build_sites_page,
+            "auto": self._build_auto_page, "tgws": self._build_tgws_page,
+            "diag": self._build_diag_page, "settings": self._build_settings_page,
+            "log": self._build_log_page,
+        }
+        # Сразу строим только страницы, которые трогают фоновые обновления
+        # (статус/прокси/журнал/настройки). Остальные — лениво при первом
+        # открытии: ускоряет запуск ~в 2-3 раза.
+        for key in ("control", "tgws", "settings", "log"):
+            self.pages[key] = self._page_builders[key]()
+
+    def _ensure_page(self, key):
+        if key not in self.pages:
+            self.pages[key] = self._page_builders[key]()
+        return self.pages[key]
 
     def _show_page(self, key):
+        self._ensure_page(key)
         for page in self.pages.values():
             page.grid_remove()
         self.pages[key].grid(row=0, column=0, sticky="nsew")
@@ -943,8 +953,12 @@ class ZapretApp(ctk.CTk):
             border_width=2, border_color=SWITCH_BORDER)
         self.full_autostart_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20),
                                         pady=12, sticky="e")
-        if zc.autostart_enabled():
-            self.full_autostart_switch.select()
+        # проверка автозапуска медленная (PowerShell ~0.5с) — не блокируем старт
+        def _chk_autostart():
+            on = zc.autostart_enabled()
+            self.post(lambda: self.full_autostart_switch.select() if on
+                      else self.full_autostart_switch.deselect())
+        threading.Thread(target=_chk_autostart, daemon=True).start()
 
         self._section(p, "Списки и обход")
         c = self._card_row(p, "📃", "Автообновление списков и IPSet",
@@ -1441,7 +1455,8 @@ class ZapretApp(ctk.CTk):
         self._auto_autoapply = True
         self.log_msg("[watchdog] запасные стратегии исчерпаны — запускаю авто-поиск…")
         self._notify("Авто-поиск", "Обход перестал работать — подбираю новую стратегию.")
-        self.post(self.on_auto_start)
+        # страница авто-поиска может быть ещё не построена (ленивая) — строим
+        self.post(lambda: (self._ensure_page("auto"), self.on_auto_start()))
 
     def _switch_to(self, name):
         preset = self.preset_by_name.get(name)
