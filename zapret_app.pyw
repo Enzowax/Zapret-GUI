@@ -828,8 +828,9 @@ class ZapretApp(ctk.CTk):
             self.full_autostart_switch.select()
 
         self._section(p, "Списки и обход")
-        c = self._card_row(p, "📃", "Автообновление списков",
-                           "Раз в неделю подтягивать свежие списки сайтов из upstream")
+        c = self._card_row(p, "📃", "Автообновление списков и IPSet",
+                           "Раз в неделю подтягивать свежие списки сайтов и IP-набор "
+                           "(ipset-all) из upstream — чтобы обход не устаревал")
         self.lists_auto_switch = ctk.CTkSwitch(
             c, text="", command=self._on_lists_auto_toggle,
             progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
@@ -1534,11 +1535,11 @@ class ZapretApp(ctk.CTk):
         self.after(20000, self._health_auto)
 
     def _startup_lists_check(self):
-        """Раз в неделю (если включено) подтянуть свежие списки из upstream."""
+        """Раз в неделю (если включено) подтянуть свежие списки и IPSet из upstream."""
         if self._closing or not zc.lists_update_due():
             return
-        self.log_msg("[Списки] плановое автообновление…")
-        self.on_update_lists(silent=True, restart_if_running=True)
+        self.log_msg("[Списки] плановое автообновление (списки + IPSet)…")
+        self.on_update_lists(silent=True, restart_if_running=True, include_ipset=True)
 
     def _refresh_lists_label(self):
         ts = zc.lists_last_update_ts()
@@ -1551,19 +1552,28 @@ class ZapretApp(ctk.CTk):
         except Exception:
             pass
 
-    def on_update_lists(self, silent=False, restart_if_running=False):
+    def on_update_lists(self, silent=False, restart_if_running=False, include_ipset=False):
         if not silent:
             self.log_msg("Обновление списков доменов из upstream…")
 
         def worker():
             ok, msg = zc.update_lists()
             self.log_msg(msg)
+            # планово обновляем и ipset-all (если фильтр не выключен вручную)
+            ipset_ok = False
+            if include_ipset and zc.ipset_enabled():
+                iok, imsg = zc.update_ipset()
+                self.log_msg(imsg)
+                ipset_ok = iok
             self.post(self._refresh_lists_label)
-            if ok:
-                self._notify("Списки обновлены", "Списки сайтов для обхода обновлены.")
+            self.post(self.refresh_status)
+            if ok or ipset_ok:
+                self._notify("Списки обновлены",
+                             "Списки сайтов" + (" и IPSet" if ipset_ok else "")
+                             + " для обхода обновлены.")
                 if restart_if_running and (
                         (self.proc and self.proc.poll() is None) or zc.service_running()):
-                    self.log_msg("Перезапуск обхода для применения новых списков…")
+                    self.log_msg("Перезапуск обхода для применения обновлений…")
                     self._watchdog_restart()
 
         threading.Thread(target=worker, daemon=True).start()

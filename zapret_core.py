@@ -98,7 +98,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.20.0"
+APP_VERSION = "2.21.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -522,6 +522,12 @@ def get_ipset_status():
     if len(lines) == 1 and lines[0].strip() == "203.0.113.113/32":
         return "none (выкл.)"
     return f"loaded ({len(lines)} строк)"
+
+
+def ipset_enabled():
+    """IPSet-фильтр в рабочем состоянии (не заглушка 'none (выкл.)').
+    Используется, чтобы плановое автообновление не включало то, что выключено."""
+    return not get_ipset_status().startswith("none")
 
 
 def load_config():
