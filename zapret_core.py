@@ -98,7 +98,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.32.0"
+APP_VERSION = "2.33.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -883,7 +883,6 @@ def ensure_telegram_bypass_exclude():
 #  Расширенная диагностика и авто-починка (Фаза 7)
 # --------------------------------------------------------------------------- #
 def _port_in_use(port):
-    import socket
     s = socket.socket()
     try:
         s.bind(("127.0.0.1", int(port)))
@@ -1618,28 +1617,6 @@ def remove_defender_exclusion(path=None):
         return True
     except Exception:
         return False
-
-
-def relaunch_app():
-    """Перезапустить приложение (через .bat-хелпер: ждёт выхода и стартует заново)."""
-    pid = os.getpid()
-    if getattr(sys, "frozen", False):
-        target = f'"{sys.executable}"'
-    else:
-        target = f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
-    bat = os.path.join(os.environ.get("TEMP", BASE), "zapret_relaunch.bat")
-    script = (
-        "@echo off\r\n"
-        ":wait\r\n"
-        f'tasklist /FI "PID eq {pid}" | find "{pid}" >nul\r\n'
-        "if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto wait )\r\n"
-        f'start "" {target}\r\n'
-        'del "%~f0"\r\n'
-    )
-    with open(bat, "w", encoding="utf-8") as f:
-        f.write(script)
-    subprocess.Popen(["cmd", "/c", bat], creationflags=CREATE_NO_WINDOW,
-                     startupinfo=_startupinfo())
 
 
 # --------------------------------------------------------------------------- #

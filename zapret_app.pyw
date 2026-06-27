@@ -16,7 +16,6 @@ import queue
 import ctypes
 import threading
 
-import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 import customtkinter as ctk
@@ -1579,11 +1578,13 @@ class ZapretApp(ctk.CTk):
         self.pages = {}
         self.nav_buttons = {}
         self.nav_badges = {}
+        self._diag_loaded = False        # пересобранная диагностика авто-обновится
         self._init_ttk_style()
         self._build_layout()
         self._show_page(cur)
         self._render_log()
         self.refresh_status()
+        self._set_diag_badge(getattr(self, "_diag_bad_count", 0))   # вернуть бейдж
 
     def on_add_defender_exclusion(self):
         self.log_msg("Добавляю папку в исключения Windows Defender…")
@@ -1782,6 +1783,7 @@ class ZapretApp(ctk.CTk):
 
     def _set_diag_badge(self, n_bad):
         # красная точка на пункте «Диагностика» при критичных проблемах
+        self._diag_bad_count = n_bad
         b = self.nav_badges.get("diag")
         if b is not None:
             try:
