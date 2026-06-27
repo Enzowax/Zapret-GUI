@@ -98,7 +98,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.24.0"
+APP_VERSION = "2.25.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -648,10 +648,24 @@ def service_running():
         return False
 
 
+def tcp_timestamps_enabled():
+    """Включены ли TCP timestamps (RFC 1323). Локаленезависимо: метка строки в
+    netsh переведена (рус. «Метки времени RFC 1323»), но число «1323» и значение
+    enabled/disabled — нет. -> True/False, или None если строку не нашли."""
+    try:
+        out = run_hidden(["netsh", "interface", "tcp", "show", "global"]).stdout
+    except Exception:
+        return None
+    for ln in out.splitlines():
+        low = ln.lower()
+        if "1323" in low and ":" in low:
+            return "enabled" in low.split(":", 1)[1]
+    return None
+
+
 def enable_tcp_timestamps():
     try:
-        out = run_hidden(["netsh", "interface", "tcp", "show", "global"]).stdout.lower()
-        if "timestamps" in out and "enabled" in out:
+        if tcp_timestamps_enabled():
             return
         run_hidden(["netsh", "interface", "tcp", "set", "global", "timestamps=enabled"])
     except Exception:
@@ -918,10 +932,10 @@ def diagnose():
             "загружен (обход работает)" if wd_exists
             else "не загружен (норма, когда обход выключен)")
 
-    g = run_hidden(["netsh", "interface", "tcp", "show", "global"]).stdout.lower()
-    ts = "timestamps" in g and "enabled" in g
+    ts = tcp_timestamps_enabled()
     add("TCP timestamps", "ok" if ts else "warn",
-        "включены" if ts else "выключены — нужны некоторым стратегиям",
+        "включены" if ts else ("выключены — нужны некоторым стратегиям"
+                               if ts is False else "не удалось определить"),
         None if ts else "enable_ts")
 
     found_svc = [s for s in CONFLICTING_SERVICES
@@ -983,17 +997,33 @@ def stop_conflicts():
 
 
 def apply_fix(key):
-    """Выполнить авто-починку по ключу из diagnose()[...]['fix']. -> сообщение."""
+    """Выполнить авто-починку и ПРОВЕРИТЬ результат. Возвращает честное
+    сообщение об успехе либо о реальной причине неудачи (обычно нет прав)."""
+    if not is_admin():
+        return "Нужны права администратора — перезапустите приложение от админа."
+
     if key == "start_bfe":
         run_hidden(["sc", "config", "BFE", "start=", "auto"])
         run_hidden(["net", "start", "BFE"])
-        return "BFE: запуск выполнен."
+        ok = "RUNNING" in run_hidden(["sc", "query", "BFE"]).stdout.upper()
+        return "BFE запущена." if ok else "Не удалось запустить BFE."
+
     if key == "reset_windivert":
+        if winws_running():
+            return "Драйвер занят — сначала остановите обход, затем сбросьте."
         remove_windivert()
-        return "Драйвер WinDivert сброшен."
+        still = run_hidden(["sc", "query", "WinDivert"]).returncode == 0
+        return "Драйвер WinDivert сброшен." if not still \
+            else "Не удалось удалить службу WinDivert."
+
     if key == "enable_ts":
+        before = tcp_timestamps_enabled()
+        if before:
+            return "TCP timestamps уже включены."
         run_hidden(["netsh", "interface", "tcp", "set", "global", "timestamps=enabled"])
-        return "TCP timestamps включены."
+        return "TCP timestamps включены." if tcp_timestamps_enabled() \
+            else "Не удалось включить TCP timestamps."
+
     if key == "stop_conflicts":
         return stop_conflicts()
     return ""
