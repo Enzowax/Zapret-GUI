@@ -98,7 +98,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.33.0"
+APP_VERSION = "2.34.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -1578,6 +1578,65 @@ def cleanup_xbox_legacy():
             save_config(cfg)
     except Exception:
         pass
+
+
+# --------------------------------------------------------------------------- #
+#  Исключение игр (Steam/Dota 2) из обхода
+# --------------------------------------------------------------------------- #
+# Контент гайдов/гильдии/Workshop в Dota 2 грузится со Steam через Cloudflare,
+# Akamai и Valve-серверы, чьи IP попадают в ipset-all.txt — поэтому обход
+# (профиль --ipset=ipset-all --filter-tcp=80,443,8443) их десинкает и ломает.
+# В этом профиле есть --hostlist-exclude=list-exclude-user.txt, поэтому winws
+# пропустит десинк для соединений с этими SNI, даже если IP в ipset.
+GAME_EXCLUDE_DOMAINS = [
+    "steampowered.com", "steamcommunity.com", "steamstatic.com",
+    "steamusercontent.com", "steamcontent.com", "steamserver.net",
+    "steamgames.com", "dota2.com", "valvesoftware.com",
+]
+
+
+def _read_exclude_user():
+    if not os.path.exists(LIST_EXCLUDE_USER):
+        return []
+    try:
+        return [l.strip() for l in
+                open(LIST_EXCLUDE_USER, encoding="utf-8", errors="replace")
+                .read().splitlines() if l.strip()]
+    except Exception:
+        return []
+
+
+def _write_exclude_user(lines):
+    lines = [l for l in lines if l and l != _EXCLUDE_PLACEHOLDER]
+    os.makedirs(LISTS, exist_ok=True)
+    with open(LIST_EXCLUDE_USER, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines or [_EXCLUDE_PLACEHOLDER]) + "\n")
+
+
+def game_exclusions_present():
+    have = set(_read_exclude_user())
+    return all(d in have for d in GAME_EXCLUDE_DOMAINS)
+
+
+def set_game_exclusions(on):
+    """Добавить/убрать домены Steam/Dota 2 в list-exclude-user.txt, чтобы обход
+    не ломал загрузку гайдов/контента. -> True если файл изменился."""
+    try:
+        existing = _read_exclude_user()
+        have = set(existing)
+        if on:
+            added = [d for d in GAME_EXCLUDE_DOMAINS if d not in have]
+            if not added:
+                return False
+            _write_exclude_user(existing + added)
+        else:
+            kept = [l for l in existing if l not in GAME_EXCLUDE_DOMAINS]
+            if len(kept) == len(existing):
+                return False
+            _write_exclude_user(kept)
+        return True
+    except Exception:
+        return False
 
 
 # --------------------------------------------------------------------------- #

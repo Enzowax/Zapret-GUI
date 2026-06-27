@@ -94,6 +94,24 @@ def test_ipset_enabled_detects_placeholder(tmp_path, monkeypatch):
     assert zc.ipset_enabled() is True
 
 
+# --- game (Steam/Dota) exclusions toggle --------------------------------- #
+def test_game_exclusions_toggle(tmp_path, monkeypatch):
+    f = tmp_path / "list-exclude-user.txt"
+    monkeypatch.setattr(zc, "LIST_EXCLUDE_USER", str(f))
+    monkeypatch.setattr(zc, "LISTS", str(tmp_path) + os.sep)
+    f.write_text(zc._EXCLUDE_PLACEHOLDER + "\n", encoding="utf-8")
+    assert zc.game_exclusions_present() is False
+    assert zc.set_game_exclusions(True) is True
+    assert zc.game_exclusions_present() is True
+    assert zc.set_game_exclusions(True) is False          # идемпотентно
+    body = f.read_text(encoding="utf-8")
+    assert "dota2.com" in body and "steamstatic.com" in body
+    assert zc._EXCLUDE_PLACEHOLDER not in body            # заглушка убрана
+    assert zc.set_game_exclusions(False) is True
+    assert zc.game_exclusions_present() is False
+    assert f.read_text(encoding="utf-8").strip()          # файл не пустой
+
+
 # --- user domains round-trip --------------------------------------------- #
 def test_user_domains_roundtrip(tmp_path, monkeypatch):
     f = tmp_path / "list-general-user.txt"

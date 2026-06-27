@@ -545,8 +545,32 @@ class ZapretApp(ctk.CTk):
                                         text_color=MUTED)
         self.sites_count.pack(side="left", padx=14)
 
+        self._section(p, "Исключения из обхода")
+        c = self._card_row(p, "🎮", "Не трогать Steam / Dota 2",
+                           "Включите, если при обходе в Dota 2 не грузятся гайды/"
+                           "сборки/гильдия (контент Steam идёт через те же сети, что "
+                           "и обход). Обход перестанет десинкать трафик Steam/Valve.")
+        self.games_excl_switch = ctk.CTkSwitch(
+            c, text="", command=self._on_games_excl_toggle,
+            progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
+            border_width=2, border_color=SWITCH_BORDER)
+        self.games_excl_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20),
+                                    pady=12, sticky="e")
+        if zc.game_exclusions_present():
+            self.games_excl_switch.select()
+
         self._sites_load()
         return p
+
+    def _on_games_excl_toggle(self):
+        on = bool(self.games_excl_switch.get())
+        changed = zc.set_game_exclusions(on)
+        self.log_msg("Steam/Dota 2 " + ("исключены из обхода." if on
+                     else "снова обрабатываются обходом."))
+        if changed and ((self.proc and self.proc.poll() is None)
+                        or zc.service_running()):
+            self.log_msg("Перезапуск обхода для применения исключений…")
+            threading.Thread(target=self._watchdog_restart, daemon=True).start()
 
     def _sites_load(self):
         domains = zc.read_user_domains()
