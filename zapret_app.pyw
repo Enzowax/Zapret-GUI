@@ -178,6 +178,7 @@ class ZapretApp(ctk.CTk):
                         font=(FONT_DISPLAY, 10))
         style.map("Zap.Treeview", background=[("selected", ACCENT)],
                   foreground=[("selected", ON_ACCENT)])
+        self._apply_tree_tags()
 
     # -- каркас ----------------------------------------------------------- #
     def _build_layout(self):
@@ -209,12 +210,18 @@ class ZapretApp(ctk.CTk):
                            ("auto", "🔍   Авто-поиск"), ("tgws", "✈   Telegram"),
                            ("diag", "🩺   Диагностика"), ("settings", "⚙   Настройки"),
                            ("log", "📜   Журнал")]:
-            b = ctk.CTkButton(side, text=label, anchor="w", height=42, corner_radius=8,
+            row = ctk.CTkFrame(side, fg_color="transparent")
+            row.pack(fill="x", padx=8, pady=2)
+            # акцентная полоска-индикатор активного пункта (тема-независимая)
+            bar = ctk.CTkFrame(row, width=3, height=22, corner_radius=2,
+                               fg_color="transparent")
+            bar.pack(side="left", pady=10)
+            b = ctk.CTkButton(row, text=label, anchor="w", height=42, corner_radius=9,
                               fg_color="transparent", hover_color=CARD_HOVER,
                               text_color=TEXT, font=(FONT, 14),
                               command=lambda k=key: self._show_page(k))
-            b.pack(fill="x", padx=10, pady=3)
-            self.nav_buttons[key] = b
+            b.pack(side="left", fill="x", expand=True, padx=(7, 0))
+            self.nav_buttons[key] = (b, bar)
 
         self.side_status = ctk.CTkLabel(side, text="●  проверка…", font=(FONT, 12),
                                         text_color=MUTED, anchor="w")
@@ -241,10 +248,11 @@ class ZapretApp(ctk.CTk):
         for page in self.pages.values():
             page.grid_remove()
         self.pages[key].grid(row=0, column=0, sticky="nsew")
-        for k, b in self.nav_buttons.items():
+        for k, (b, bar) in self.nav_buttons.items():
             active = (k == key)
-            b.configure(fg_color=ACCENT if active else "transparent",
-                        text_color=ON_ACCENT if active else TEXT)
+            b.configure(fg_color=CARD_HOVER if active else "transparent",
+                        text_color=ACCENT if active else TEXT)
+            bar.configure(fg_color=ACCENT if active else "transparent")
         if key == "diag" and not getattr(self, "_diag_loaded", False):
             self._diag_loaded = True
             self.on_diag_run()
@@ -256,16 +264,16 @@ class ZapretApp(ctk.CTk):
 
     def _title(self, parent, text, subtitle=None):
         ctk.CTkLabel(parent, text=text, font=(FONT_DISPLAY, 25), text_color=TEXT,
-                     anchor="w").pack(fill="x", padx=6, pady=(10, 2))
+                     anchor="w").pack(fill="x", padx=16, pady=(12, 2))
         if subtitle:
             ctk.CTkLabel(parent, text=subtitle, font=(FONT, 12), text_color=MUTED,
-                         anchor="w", justify="left", wraplength=720).pack(
-                fill="x", padx=6, pady=(0, 10))
+                         anchor="w", justify="left", wraplength=760).pack(
+                fill="x", padx=16, pady=(0, 10))
 
     def _section(self, parent, text):
         # эйбрау-метка секции: акцентная риска + капс
         row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", padx=8, pady=(18, 6))
+        row.pack(fill="x", padx=16, pady=(20, 6))
         ctk.CTkFrame(row, width=14, height=2, corner_radius=1,
                      fg_color=ACCENT).pack(side="left", pady=(1, 0))
         ctk.CTkLabel(row, text="  " + text.upper(), font=(FONT_DISPLAY, 11),
@@ -274,7 +282,7 @@ class ZapretApp(ctk.CTk):
     def _card(self, parent):
         f = ctk.CTkFrame(parent, corner_radius=14, fg_color=CARD_BG,
                          border_width=1, border_color=BORDER)
-        f.pack(fill="x", padx=4, pady=5)
+        f.pack(fill="x", padx=14, pady=5)
         f.grid_columnconfigure(1, weight=1)
         return f
 
@@ -307,7 +315,7 @@ class ZapretApp(ctk.CTk):
         self._section(p, "Состояние")
         card = ctk.CTkFrame(p, corner_radius=14, fg_color=CARD_BG,
                             border_width=1, border_color=BORDER)
-        card.pack(fill="x", padx=4, pady=5)
+        card.pack(fill="x", padx=14, pady=5)
         # акцентная риска сверху — «живой сигнал»
         ctk.CTkFrame(card, height=3, corner_radius=2, fg_color=ACCENT).pack(
             fill="x", padx=24, pady=(10, 0))
@@ -573,7 +581,8 @@ class ZapretApp(ctk.CTk):
         self.btn_auto_stop = self._btn(box, "■  Остановить", self.on_auto_stop, width=130)
         self.btn_auto_stop.pack(side="left", padx=4)
         self.btn_auto_stop.configure(state="disabled")
-        self.auto_bar = ctk.CTkProgressBar(box, width=240, progress_color=ACCENT)
+        self.auto_bar = ctk.CTkProgressBar(box, width=240, progress_color=ACCENT,
+                                           fg_color=FIELD_BG)
         self.auto_bar.pack(side="left", padx=14)
         self.auto_bar.set(0)
         self.auto_phase_lbl = ctk.CTkLabel(box, text="", font=(FONT, 12), text_color=MUTED)
@@ -594,10 +603,7 @@ class ZapretApp(ctk.CTk):
                              stretch=(col == "strategy"))
         self.tree.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         c.grid_columnconfigure(0, weight=1)
-        self.tree.tag_configure("best", background="#173d17", foreground="#9f9")
-        self.tree.tag_configure("good", foreground=GREEN)
-        self.tree.tag_configure("partial", foreground=YELLOW)
-        self.tree.tag_configure("bad", foreground=RED)
+        self._apply_tree_tags()
 
         c = self._card(p)
         box = ctk.CTkFrame(c, fg_color="transparent")
@@ -611,6 +617,17 @@ class ZapretApp(ctk.CTk):
         self.btn_install_best.pack(side="left", padx=4)
         self.btn_install_best.configure(state="disabled")
         return p
+
+    def _apply_tree_tags(self):
+        # тема-зависимые теги строк таблицы (re-применяются при смене темы)
+        if not hasattr(self, "tree"):
+            return
+        self.tree.tag_configure("best",
+                                background=_pick(("#d8f1e2", "#173d17")),
+                                foreground=_pick(("#137a43", "#9af0bf")))
+        self.tree.tag_configure("good", foreground=GREEN)
+        self.tree.tag_configure("partial", foreground=YELLOW)
+        self.tree.tag_configure("bad", foreground=RED)
 
     # -- страница: Telegram ----------------------------------------------- #
     def _build_tgws_page(self):
@@ -665,7 +682,9 @@ class ZapretApp(ctk.CTk):
         box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
         self.tg_port_var = ctk.StringVar(value=str(zc.tg_get_port()))
         ctk.CTkEntry(box, textvariable=self.tg_port_var, width=80, height=36,
-                     font=(FONT, 13), justify="center").pack(side="left", padx=4)
+                     font=(FONT, 13), justify="center", fg_color=FIELD_BG,
+                     text_color=TEXT, border_color=BORDER, border_width=1).pack(
+            side="left", padx=4)
         self._btn(box, "Применить", self.on_tg_apply_port, width=110).pack(side="left", padx=4)
         self._btn(box, "Сменить секрет", self.on_tg_regen, width=150).pack(side="left", padx=4)
 
@@ -728,7 +747,7 @@ class ZapretApp(ctk.CTk):
 
         self._section(p, "Результаты проверки")
         self.diag_list = ctk.CTkFrame(p, fg_color="transparent")
-        self.diag_list.pack(fill="x", padx=0, pady=0)
+        self.diag_list.pack(fill="x", padx=10, pady=0)
         ctk.CTkLabel(self.diag_list, text="Нажмите «Проверить заново».",
                      font=(FONT, 12), text_color=MUTED).pack(anchor="w", padx=8, pady=8)
         return p
