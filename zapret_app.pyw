@@ -1761,12 +1761,16 @@ class ZapretApp(ctk.CTk):
             return
         zc.set_tg_port(port)
         self.tg_link_var.set(zc.tg_proxy_url())
-        self.log_msg(f"Порт прокси: {port}. Перезапустите прокси, чтобы применить.")
+        self.log_msg(f"Порт прокси: {port}.")
+        if zc.tg_proxy_running():
+            self._tg_restart()      # применить новый порт сразу
 
     def on_tg_regen(self):
         zc.tg_regenerate_secret()
         self.tg_link_var.set(zc.tg_proxy_url())
-        self.log_msg("Секрет прокси обновлён. Перезапустите прокси и обновите ссылку в Telegram.")
+        self.log_msg("Секрет прокси обновлён — обновите ссылку в Telegram.")
+        if zc.tg_proxy_running():
+            self._tg_restart()      # применить новый секрет сразу
 
     def _tg_restart(self):
         """Перезапустить встроенный прокси (для применения настроек на лету)."""

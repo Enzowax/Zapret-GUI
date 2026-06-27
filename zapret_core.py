@@ -98,7 +98,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.23.0"
+APP_VERSION = "2.24.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -863,22 +863,6 @@ def ensure_telegram_bypass_exclude():
         return True
     except Exception:
         return False
-
-
-def run_diagnostics():
-    out = []
-    out.append(("RUNNING" in run_hidden(["sc", "query", "BFE"]).stdout.upper(),
-                "Base Filtering Engine"))
-    g = run_hidden(["netsh", "interface", "tcp", "show", "global"]).stdout.lower()
-    out.append(("timestamps" in g and "enabled" in g, "TCP timestamps"))
-    out.append((os.path.exists(os.path.join(BIN, "WinDivert64.sys")),
-                "WinDivert64.sys в bin\\"))
-    found = [s for s in CONFLICTING_SERVICES
-             if run_hidden(["sc", "query", s]).returncode == 0]
-    out.append((not found, "Конфликтующие обходы: "
-                + (", ".join(found) if found else "нет")))
-    out.append((winws_running(), "winws.exe запущен"))
-    return out
 
 
 # --------------------------------------------------------------------------- #
