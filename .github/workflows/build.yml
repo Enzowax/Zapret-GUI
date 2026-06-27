@@ -11,7 +11,25 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    # Гейт: тесты + линт реальных багов до сборки. Если падают — релиза не будет.
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test deps
+        run: pip install pytest ruff cryptography
+      - name: Lint (реальные баги, не стиль)
+        run: ruff check --select=E9,F63,F7,F82 zapret_core.py zapret_app.pyw tgproxy/ tests/
+      - name: Unit tests
+        run: pytest tests/ -q
+
   build:
+    needs: test            # сборка только если тесты прошли
     runs-on: windows-latest
     steps:
       - name: Checkout

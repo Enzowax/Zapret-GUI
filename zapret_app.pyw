@@ -2335,6 +2335,7 @@ _SINGLETON = None
 
 
 def main():
+    zc.install_crash_logging()   # необработанные исключения -> logs/crash.log
     if not zc.is_admin():
         zc.relaunch_as_admin()
         return

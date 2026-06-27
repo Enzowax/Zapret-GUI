@@ -98,7 +98,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.30.0"
+APP_VERSION = "2.31.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -1230,6 +1230,40 @@ def tg_proxy_running():
 
 def tg_last_error():
     return _tg_error
+
+
+def install_crash_logging():
+    """Писать необработанные исключения (главный поток + воркеры) в
+    logs/crash.log — в оконном .pyw они иначе исчезают бесследно. Идемпотентно."""
+    import traceback as _tb
+
+    def _write(exc_type, exc, tb, where):
+        try:
+            os.makedirs(LOGS, exist_ok=True)
+            with open(os.path.join(LOGS, "crash.log"), "a", encoding="utf-8") as f:
+                f.write("\n===== %s | %s | v%s =====\n"
+                        % (time.strftime("%Y-%m-%d %H:%M:%S"), where, APP_VERSION))
+                _tb.print_exception(exc_type, exc, tb, file=f)
+        except Exception:
+            pass
+
+    _prev = sys.excepthook
+
+    def _hook(t, e, tb):
+        _write(t, e, tb, "main")
+        try:
+            _prev(t, e, tb)
+        except Exception:
+            pass
+
+    sys.excepthook = _hook
+    try:                                  # перехват и из фоновых потоков (3.8+)
+        def _thook(args):
+            _write(args.exc_type, args.exc_value, args.exc_traceback,
+                   "thread:%s" % getattr(args.thread, "name", "?"))
+        threading.excepthook = _thook
+    except Exception:
+        pass
 
 
 def tg_proxy_log_path():
