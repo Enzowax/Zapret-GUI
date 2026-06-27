@@ -113,6 +113,7 @@ class ZapretApp(ctk.CTk):
         self.log_queue = queue.Queue()
         self.ui_queue = queue.Queue()
         self._status_busy = False
+        self._log_lines = []             # все строки журнала (для фильтра/копии)
 
         self.auto_running = False
         self.auto_cancel = False
@@ -138,6 +139,7 @@ class ZapretApp(ctk.CTk):
 
         self.pages = {}
         self.nav_buttons = {}
+        self.nav_badges = {}
 
         self._init_ttk_style()
         self._build_layout()
@@ -148,7 +150,9 @@ class ZapretApp(ctk.CTk):
         self.after(3000, self._auto_refresh)
         self.after(1500, self._startup_update_check)
         self.after(2500, self._health_auto)
+        self.after(3500, self._proxy_stats_auto)
         self.after(4000, self._startup_lists_check)
+        self.after(6000, self._startup_diag_badge)
         threading.Thread(target=self._watchdog_loop, daemon=True).start()
         if self.autostart_launch:
             # запуск при входе в систему: поднять обход и прокси, свернуться в трей
@@ -216,6 +220,9 @@ class ZapretApp(ctk.CTk):
             bar = ctk.CTkFrame(row, width=3, height=22, corner_radius=2,
                                fg_color="transparent")
             bar.pack(side="left", pady=10)
+            badge = ctk.CTkLabel(row, text="", font=(FONT, 15), text_color=RED, width=14)
+            badge.pack(side="right", padx=(0, 10))
+            self.nav_badges[key] = badge
             b = ctk.CTkButton(row, text=label, anchor="w", height=42, corner_radius=9,
                               fg_color="transparent", hover_color=CARD_HOVER,
                               text_color=TEXT, font=(FONT, 14),
@@ -700,12 +707,52 @@ class ZapretApp(ctk.CTk):
         if zc.tg_get_cfproxy():
             self.cfproxy_switch.select()
 
+        self._section(p, "Статистика")
+        c = self._card(p)
+        box = ctk.CTkFrame(c, fg_color="transparent")
+        box.grid(row=0, column=0, columnspan=3, padx=16, pady=14, sticky="w")
+        self.pstat_conn = ctk.CTkLabel(box, text="Соединения: —", font=(FONT, 13),
+                                       text_color=TEXT, anchor="w")
+        self.pstat_conn.pack(anchor="w")
+        self.pstat_traffic = ctk.CTkLabel(box, text="Трафик: —", font=(FONT, 13),
+                                          text_color=MUTED, anchor="w")
+        self.pstat_traffic.pack(anchor="w", pady=(2, 0))
+        self._btn(c, "Обновить", self._refresh_proxy_stats, width=110).grid(
+            row=0, column=3, padx=14, pady=12)
+
         self._section(p, "Диагностика прокси")
         c = self._card_row(p, "📜", "Лог прокси",
                            "Журнал соединений прокси — для разбора обрывов и сбросов")
         self._btn(c, "Открыть лог", self.on_open_proxy_log, width=140).grid(
             row=0, column=2, rowspan=2, padx=14, pady=12)
         return p
+
+    def _refresh_proxy_stats(self):
+        def worker():
+            s = zc.tg_proxy_stats()
+            self.post(lambda: self._apply_proxy_stats(s))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_proxy_stats(self, s):
+        if not hasattr(self, "pstat_conn"):
+            return
+        if not s:
+            self.pstat_conn.configure(text="Соединения: нет данных (запустите прокси)")
+            self.pstat_traffic.configure(text="Трафик: —")
+            return
+        self.pstat_conn.configure(
+            text=f"Соединения: всего {s.get('total','?')} · активных {s.get('active','?')} "
+                 f"· WS {s.get('ws','?')} · CF {s.get('cf','?')} · TCP {s.get('tcp_fb','?')}")
+        self.pstat_traffic.configure(
+            text=f"Трафик: ↑ {s.get('up','?')}   ↓ {s.get('down','?')}   ·   "
+                 f"ошибок {s.get('err','0')}")
+
+    def _proxy_stats_auto(self):
+        if self._closing:
+            return
+        if zc.tg_proxy_running():
+            self._refresh_proxy_stats()
+        self.after(10000, self._proxy_stats_auto)
 
     def on_open_proxy_log(self):
         path = zc.tg_proxy_log_path()
@@ -786,6 +833,7 @@ class ZapretApp(ctk.CTk):
         colors = {"ok": GREEN, "warn": YELLOW, "bad": RED}
         n_bad = sum(1 for it in items if it["status"] == "bad")
         n_warn = sum(1 for it in items if it["status"] == "warn")
+        self._set_diag_badge(n_bad)
         summary = ("Всё в порядке." if not n_bad and not n_warn
                    else f"Проблемы: {n_bad} критич., {n_warn} предупр.")
         ctk.CTkLabel(self.diag_list, text=summary, font=(FONT, 13, "bold"),
@@ -942,18 +990,61 @@ class ZapretApp(ctk.CTk):
     # -- страница: Журнал ------------------------------------------------- #
     def _build_log_page(self):
         p = ctk.CTkFrame(self.container, fg_color=WIN_BG)
-        p.grid_rowconfigure(1, weight=1)
+        p.grid_rowconfigure(2, weight=1)
         p.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(p, text="Журнал", font=(FONT, 24, "bold"), text_color=TEXT,
+        ctk.CTkLabel(p, text="Журнал", font=(FONT_DISPLAY, 25), text_color=TEXT,
                      anchor="w").grid(row=0, column=0, sticky="w", padx=16, pady=(12, 6))
-        self.logbox = ctk.CTkTextbox(p, font=("Consolas", 12), fg_color=LOG_BG,
-                                     text_color=LOG_FG, wrap="word")
-        self.logbox.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 8))
+
+        bar = ctk.CTkFrame(p, fg_color="transparent")
+        bar.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 6))
+        bar.grid_columnconfigure(0, weight=1)
+        self.log_filter_var = ctk.StringVar()
+        self.log_filter_var.trace_add("write", lambda *a: self._render_log())
+        ctk.CTkEntry(bar, textvariable=self.log_filter_var, height=34, font=(FONT, 12),
+                     placeholder_text="Фильтр по тексту…", fg_color=FIELD_BG,
+                     text_color=TEXT, border_color=BORDER, border_width=1).grid(
+            row=0, column=0, sticky="ew", padx=(0, 8))
+        self.log_count_lbl = ctk.CTkLabel(bar, text="", font=(FONT, 11), text_color=MUTED)
+        self.log_count_lbl.grid(row=0, column=1, padx=(0, 8))
+        self._btn(bar, "Копировать", self.on_copy_log, width=120).grid(row=0, column=2, padx=4)
+        self._btn(bar, "Очистить", self.clear_log, width=110).grid(row=0, column=3, padx=(4, 0))
+
+        self.logbox = ctk.CTkTextbox(p, font=(FONT_MONO, 12), fg_color=LOG_BG,
+                                     text_color=LOG_FG, wrap="none")
+        self.logbox.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 12))
         self.logbox.configure(state="disabled")
-        self._btn(p, "Очистить журнал", self.clear_log, width=160).grid(
-            row=2, column=0, sticky="e", padx=16, pady=(0, 12))
         self.log_msg("Готово. Выберите пресет и нажмите «Запустить».")
         return p
+
+    def _log_matches(self, line):
+        flt = self.log_filter_var.get().strip().lower() if hasattr(self, "log_filter_var") else ""
+        return (not flt) or (flt in line.lower())
+
+    def _render_log(self):
+        # перерисовать журнал из буфера с учётом фильтра
+        if not hasattr(self, "logbox"):
+            return
+        shown = [ln for ln in self._log_lines if self._log_matches(ln)]
+        self.logbox.configure(state="normal")
+        self.logbox.delete("1.0", "end")
+        if shown:
+            self.logbox.insert("1.0", "\n".join(shown) + "\n")
+        self.logbox.see("end")
+        self.logbox.configure(state="disabled")
+        try:
+            total = len(self._log_lines)
+            self.log_count_lbl.configure(
+                text=f"{len(shown)}/{total}" if len(shown) != total else f"{total} строк")
+        except Exception:
+            pass
+
+    def on_copy_log(self):
+        try:
+            self.clipboard_clear()
+            self.clipboard_append("\n".join(self._log_lines))
+            self.log_msg(f"[журнал] скопировано строк: {len(self._log_lines)}")
+        except Exception as e:
+            self.log_msg(f"[журнал] не удалось скопировать: {e}")
 
     # -- журнал / очередь ------------------------------------------------- #
     def log_msg(self, text):
@@ -973,21 +1064,33 @@ class ZapretApp(ctk.CTk):
                 pass
 
     def _poll_ui(self):
+        new_count = 0
         try:
             while True:
-                line = self.log_queue.get_nowait()
-                self.logbox.configure(state="normal")
-                self.logbox.insert("end", line.rstrip() + "\n")
-                self.logbox.see("end")
-                self.logbox.configure(state="disabled")
+                line = self.log_queue.get_nowait().rstrip()
+                self._log_lines.append(line)
+                if len(self._log_lines) > 5000:        # ограничение памяти
+                    self._log_lines = self._log_lines[-4000:]
+                    self.post(self._render_log)
+                new_count += 1
+                if self._log_matches(line):
+                    self.logbox.configure(state="normal")
+                    self.logbox.insert("end", line + "\n")
+                    self.logbox.see("end")
+                    self.logbox.configure(state="disabled")
                 if self._logf:
                     try:
-                        self._logf.write(time.strftime("%H:%M:%S ") + line.rstrip() + "\n")
+                        self._logf.write(time.strftime("%H:%M:%S ") + line + "\n")
                         self._logf.flush()
                     except Exception:
                         pass
         except queue.Empty:
             pass
+        if new_count and hasattr(self, "log_count_lbl"):
+            try:
+                self.log_count_lbl.configure(text=f"{len(self._log_lines)} строк")
+            except Exception:
+                pass
         try:
             while True:
                 fn = self.ui_queue.get_nowait()
@@ -1000,9 +1103,14 @@ class ZapretApp(ctk.CTk):
         self.after(100, self._poll_ui)
 
     def clear_log(self):
+        self._log_lines = []
         self.logbox.configure(state="normal")
         self.logbox.delete("1.0", "end")
         self.logbox.configure(state="disabled")
+        try:
+            self.log_count_lbl.configure(text="0 строк")
+        except Exception:
+            pass
 
     # -- статус ----------------------------------------------------------- #
     def _auto_refresh(self):
@@ -1617,6 +1725,29 @@ class ZapretApp(ctk.CTk):
             return
         self.log_msg("[Списки] плановое автообновление (списки + IPSet)…")
         self.on_update_lists(silent=True, restart_if_running=True, include_ipset=True)
+
+    def _set_diag_badge(self, n_bad):
+        # красная точка на пункте «Диагностика» при критичных проблемах
+        b = self.nav_badges.get("diag")
+        if b is not None:
+            try:
+                b.configure(text="●" if n_bad else "")
+            except Exception:
+                pass
+
+    def _startup_diag_badge(self):
+        # фоновая проверка при запуске для бейджа (на странице ещё ничего не строим)
+        if self._closing:
+            return
+
+        def worker():
+            try:
+                n_bad = sum(1 for it in zc.diagnose() if it["status"] == "bad")
+            except Exception:
+                n_bad = 0
+            self.post(lambda: self._set_diag_badge(n_bad))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _refresh_lists_label(self):
         ts = zc.lists_last_update_ts()

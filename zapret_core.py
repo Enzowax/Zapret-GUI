@@ -98,7 +98,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.28.0"
+APP_VERSION = "2.29.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -1234,6 +1234,29 @@ def tg_last_error():
 
 def tg_proxy_log_path():
     return TG_PROXY_LOG
+
+
+def tg_proxy_stats():
+    """Распарсить последнюю строку 'stats:' из лога прокси (ws/cf/tcp/up/down…).
+    -> dict ключ→строка, или None если статистики ещё нет."""
+    if not os.path.exists(TG_PROXY_LOG):
+        return None
+    last = None
+    try:
+        with open(TG_PROXY_LOG, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                if "stats:" in ln:
+                    last = ln
+    except Exception:
+        return None
+    if not last:
+        return None
+    out = {}
+    for tok in last.split("stats:", 1)[1].replace("|", " ").split():
+        if "=" in tok:
+            k, v = tok.split("=", 1)
+            out[k] = v
+    return out or None
 
 
 def _setup_proxy_logging():
