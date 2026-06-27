@@ -98,7 +98,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.21.0"
+APP_VERSION = "2.22.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -403,6 +403,47 @@ def build_args_str(argstr, mode):
 def build_args(bat_path, mode):
     """Совместимость: список аргументов из .bat-файла."""
     return build_args_str(extract_winws_argstring(bat_path), mode)
+
+
+def strategy_signature(argstr):
+    """Набор признаков стратегии (тип десинка и т.п.) для оценки «похожести».
+    Похожие по сигнатуре стратегии чаще работают/ломаются вместе при смене DPI."""
+    s = (argstr or "").lower()
+    feats = set()
+    for m in re.findall(r"--dpi-desync=([a-z0-9,]+)", s):
+        for part in m.split(","):
+            if part:
+                feats.add("d:" + part)
+    for m in re.findall(r"--dpi-desync-fooling=([a-z0-9,]+)", s):
+        feats.add("f:" + m)
+    if "--dpi-desync-split-seqovl" in s:
+        feats.add("seqovl")
+    if "--dpi-desync-fake-quic" in s or "quic" in s:
+        feats.add("quic")
+    if "--ip-id=" in s:
+        feats.add("ipid")
+    return feats
+
+
+def prioritize_presets(presets, last_name=None, pool=None):
+    """Упорядочить пресеты для авто-поиска по приоритету: последний рабочий →
+    запасной пул (recovery_pool) → похожие по сигнатуре десинка → остальные.
+    Стабильная сортировка сохраняет исходный порядок при равных рангах."""
+    pool = list(pool or [])
+    by_name = {p["name"]: p for p in presets}
+    last = by_name.get(last_name)
+    last_sig = strategy_signature(last["args"]) if last else set()
+
+    def rank(p):
+        name = p["name"]
+        if last_name and name == last_name:
+            return (0, 0)
+        if name in pool:
+            return (1, pool.index(name))
+        overlap = len(strategy_signature(p["args"]) & last_sig) if last_sig else 0
+        return (2, -overlap)
+
+    return sorted(presets, key=rank)
 
 
 def _preset_id(name):

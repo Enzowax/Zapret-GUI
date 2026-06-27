@@ -499,8 +499,10 @@ class ZapretApp(ctk.CTk):
     def _build_auto_page(self):
         p = self._page()
         self._title(p, "Авто-поиск стратегии",
-                    "Двухфазный подбор: быстрый отсев всех пресетов, затем точная "
-                    "проверка лучших. Проверки хостов выполняются асинхронно.")
+                    "Умный подбор: стратегии пробуются по приоритету — последняя "
+                    "рабочая, запасные из пула, похожие по типу десинка, затем "
+                    "остальные. В быстром режиме поиск останавливается, как только "
+                    "найдено несколько рабочих.")
 
         self._section(p, "Что проверять")
         c = self._card(p)
@@ -513,8 +515,15 @@ class ZapretApp(ctk.CTk):
             ctk.CTkCheckBox(box, text=zc.AUTO_SERVICE_LABELS[key], variable=var,
                             font=(FONT, 13), fg_color=ACCENT,
                             hover_color=ACCENT_HOVER).pack(side="left", padx=12)
-        ctk.CTkLabel(box, text="(собирается полный список рабочих стратегий)",
-                     font=(FONT, 11), text_color=MUTED).pack(side="left", padx=18)
+        box2 = ctk.CTkFrame(c, fg_color="transparent")
+        box2.grid(row=1, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="w")
+        self.fast_var = ctk.BooleanVar(value=self.cfg.get("auto_fast", True))
+        ctk.CTkCheckBox(box2, text="Быстрый режим (остановиться на первых рабочих)",
+                        variable=self.fast_var, font=(FONT, 13), fg_color=ACCENT,
+                        hover_color=ACCENT_HOVER, command=self._on_fast_toggle).pack(
+            side="left", padx=12)
+        ctk.CTkLabel(box2, text="выкл. — проверить все 20 и собрать полный пул",
+                     font=(FONT, 11), text_color=MUTED).pack(side="left", padx=14)
 
         c = self._card(p)
         box = ctk.CTkFrame(c, fg_color="transparent")
@@ -1842,8 +1851,13 @@ class ZapretApp(ctk.CTk):
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="disabled")
         self.auto_bar.set(0)
+        self.auto_fast = bool(self.fast_var.get())
         threading.Thread(target=self._auto_worker, args=(list(self.presets), services),
                          daemon=True).start()
+
+    def _on_fast_toggle(self):
+        self.cfg["auto_fast"] = bool(self.fast_var.get())
+        zc.save_config(self.cfg)
 
     def on_auto_stop(self):
         if self.auto_running:
@@ -1877,12 +1891,20 @@ class ZapretApp(ctk.CTk):
             zc.kill_winws_only()
             self.proc = None
 
-            self.log_msg("=== Авто-поиск (двухфазный): %d пресетов, %d целей ==="
-                         % (len(presets), len(full_targets)))
+            # умный порядок: последний рабочий -> пул -> похожие -> остальные
+            presets = zc.prioritize_presets(
+                presets, self.cfg.get("strategy"), self.cfg.get("recovery_pool"))
+            fast = getattr(self, "auto_fast", False)
+            EARLY_STOP = 3      # в быстром режиме хватит нескольких рабочих
+            self.log_msg("=== Авто-поиск (%s): %d пресетов, %d целей; первый: %s ==="
+                         % ("быстрый" if fast else "полный",
+                            len(presets), len(full_targets),
+                            presets[0]["name"] if presets else "—"))
 
-            # Фаза 1 — отсев
-            self.post(lambda: self.auto_phase_lbl.configure(text="Фаза 1: быстрый отсев"))
+            # Фаза 1 — отсев (по приоритету)
+            self.post(lambda: self.auto_phase_lbl.configure(text="Фаза 1: отсев по приоритету"))
             phase1 = []
+            full_found = 0
             n = len(presets)
             for idx, preset in enumerate(presets, 1):
                 if self.auto_cancel:
@@ -1909,6 +1931,12 @@ class ZapretApp(ctk.CTk):
                 avg = sum(lats) / len(lats) if lats else None
                 phase1.append((name, score, avg))
                 self.log_msg(f"  отсев: {name} — {score}/{len(quick_hosts)}")
+                if score == len(quick_hosts):
+                    full_found += 1
+                    if fast and full_found >= EARLY_STOP:
+                        self.log_msg(f"  быстрый режим: найдено {full_found} рабочих — "
+                                     f"останавливаю отсев ({idx}/{n})")
+                        break
 
             if self.auto_cancel:
                 candidates = []
