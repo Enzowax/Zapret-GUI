@@ -35,38 +35,48 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 # Палитра как пары (светлая, тёмная) — CustomTkinter сам выбирает по режиму.
-WIN_BG = ("#f2f3f7", "#15161c")
-SIDEBAR_BG = ("#e7e9f1", "#0f1014")
-CARD_BG = ("#ffffff", "#1f2129")
-CARD_HOVER = ("#e9ebf3", "#272a34")
-BTN_HOVER = ("#d8dbe6", "#343a46")     # ховер неакцентной кнопки
-SWITCH_OFF = ("#7e889e", "#3a3f4b")    # дорожка выключ. тумблера (тёмная — виден белый бегунок)
-SWITCH_KNOB = ("#ffffff", "#f0f2f5")   # бегунок тумблера
-SWITCH_BORDER = ("#566076", "#4a4f5b") # обводка тумблера (чтобы не сливался)
-FIELD_BG = ("#dfe3ec", "#2a2e38")      # фон выпадающих списков/полей
-LOG_BG = ("#ffffff", "#101218")
-LOG_FG = ("#1a1c22", "#d7dbe0")
-TEXT = ("#1a1c22", "#e9eaf0")
-MUTED = ("#6b7280", "#8a909b")
+# Идентичность «Signal»: прохладный чернильный тёмный / выверенный холодный
+# светлый, с честной иерархией поверхностей и волосяной рамкой для чёткости.
+WIN_BG = ("#eceff5", "#0f1218")        # фон окна
+SIDEBAR_BG = ("#e1e6ef", "#0a0c11")    # сайдбар — глубже фона, отступает назад
+CARD_BG = ("#ffffff", "#171b23")       # поверхность карты (приподнята)
+CARD_HOVER = ("#f1f4f9", "#1f242e")
+BTN_HOVER = ("#dde3ec", "#2a303c")     # ховер неакцентной кнопки
+BORDER = ("#d4dae5", "#262c38")        # волосяная рамка карт/разделителей
+SWITCH_OFF = ("#abb3c3", "#3a4150")    # дорожка выключ. тумблера
+SWITCH_KNOB = ("#ffffff", "#eaeef4")   # бегунок тумблера
+SWITCH_BORDER = ("#98a1b3", "#4a5263") # обводка тумблера (чтобы не сливался)
+FIELD_BG = ("#e7ebf2", "#1f242e")      # фон выпадающих списков/полей
+LOG_BG = ("#ffffff", "#0c0f15")
+LOG_FG = ("#2a3240", "#cdd3dd")
+TEXT = ("#1b2330", "#eef1f6")
+MUTED = ("#5c6573", "#828b99")
 
-ACCENT = "#7c5cff"
-ACCENT_HOVER = "#6a4ae6"
+ON_ACCENT = "#ffffff"                  # текст/иконки поверх акцентной заливки
+ACCENT = "#0e7c75"
+ACCENT_HOVER = "#0b645e"
+# выбранный сегмент: светлый-бирюзовый (тёмный текст читается) / глубокий (светлый
+# текст). text_color=TEXT тогда чёткий и на выбранном, и на невыбранном сегменте.
+SEG_SEL = ("#9ad6cf", "#0e7c75")
+SEG_SEL_HOVER = ("#8accc4", "#0b645e")
 
-# темы оформления (акцентный цвет, hover)
+# темы оформления (акцентный цвет, hover) — «Сигнальная» по умолчанию
 THEMES = {
-    "Фиолетовая": ("#7c5cff", "#6a4ae6"),
-    "Синяя":      ("#2f80ed", "#256fd1"),
-    "Бирюзовая":  ("#1f9ec9", "#1b87aa"),
-    "Зелёная":    ("#27ae60", "#1f9551"),
-    "Янтарная":   ("#e0a52b", "#c98f1f"),
-    "Розовая":    ("#e0559b", "#c9468a"),
+    "Сигнальная": ("#0e7c75", "#0b645e"),
+    "Синяя":      ("#2f6fe0", "#2560c6"),
+    "Индиго":     ("#5a5cf0", "#4a4cdb"),
+    "Зелёная":    ("#1f9e57", "#1a8849"),
+    "Янтарная":   ("#c98a14", "#b0780f"),
+    "Розовая":    ("#d94f8f", "#c2417e"),
 }
 APPEARANCE = {"Тёмная": "dark", "Светлая": "light", "Системная": "system"}
 
-GREEN = "#3ad07a"
+GREEN = "#1faf63"
 RED = "#e0575b"
-YELLOW = "#e0b13a"
+YELLOW = "#d2901a"
 FONT = "Segoe UI"
+FONT_DISPLAY = "Segoe UI Semibold"     # заголовки/секции — характерный вес
+FONT_MONO = "Consolas"                 # данные/журнал
 
 
 def _pick(c):
@@ -95,9 +105,8 @@ class ZapretApp(ctk.CTk):
         # оформление — задать режим (тёмная/светлая) и акцент до построения UI
         ctk.set_appearance_mode(self.cfg.get("appearance", "dark"))
         global ACCENT, ACCENT_HOVER
-        _theme = self.cfg.get("accent_name", "Фиолетовая")
-        if _theme in THEMES:
-            ACCENT, ACCENT_HOVER = THEMES[_theme]
+        _theme = self.cfg.get("accent_name", "Сигнальная")
+        ACCENT, ACCENT_HOVER = THEMES.get(_theme, THEMES["Сигнальная"])
         self.presets = zc.load_presets()
         self.preset_by_name = {p["name"]: p for p in self.presets}
         self.proc = None
@@ -163,10 +172,12 @@ class ZapretApp(ctk.CTk):
             pass
         style.configure("Zap.Treeview", background=_pick(CARD_BG),
                         fieldbackground=_pick(CARD_BG), foreground=_pick(TEXT),
-                        rowheight=28, borderwidth=0)
-        style.configure("Zap.Treeview.Heading", background=_pick(SIDEBAR_BG),
-                        foreground=_pick(MUTED), borderwidth=0, relief="flat")
-        style.map("Zap.Treeview", background=[("selected", ACCENT)])
+                        rowheight=30, borderwidth=0, font=(FONT, 11))
+        style.configure("Zap.Treeview.Heading", background=_pick(FIELD_BG),
+                        foreground=_pick(MUTED), borderwidth=0, relief="flat",
+                        font=(FONT_DISPLAY, 10))
+        style.map("Zap.Treeview", background=[("selected", ACCENT)],
+                  foreground=[("selected", ON_ACCENT)])
 
     # -- каркас ----------------------------------------------------------- #
     def _build_layout(self):
@@ -189,10 +200,10 @@ class ZapretApp(ctk.CTk):
                          text_color=ACCENT).pack(side="left")
         ttl = ctk.CTkFrame(head, fg_color="transparent")
         ttl.pack(side="left", padx=(10, 0))
-        ctk.CTkLabel(ttl, text="Zapret GUI", font=(FONT, 18, "bold"),
-                     text_color=ACCENT, anchor="w").pack(anchor="w")
+        ctk.CTkLabel(ttl, text="Zapret GUI", font=(FONT_DISPLAY, 19),
+                     text_color=TEXT, anchor="w").pack(anchor="w")
         ctk.CTkLabel(ttl, text="by Enzowax", font=(FONT, 11),
-                     text_color=MUTED, anchor="w").pack(anchor="w")
+                     text_color=ACCENT, anchor="w").pack(anchor="w")
 
         for key, label in [("control", "🛡   Управление"), ("sites", "➕   Свои сайты"),
                            ("auto", "🔍   Авто-поиск"), ("tgws", "✈   Telegram"),
@@ -231,7 +242,9 @@ class ZapretApp(ctk.CTk):
             page.grid_remove()
         self.pages[key].grid(row=0, column=0, sticky="nsew")
         for k, b in self.nav_buttons.items():
-            b.configure(fg_color=ACCENT if k == key else "transparent")
+            active = (k == key)
+            b.configure(fg_color=ACCENT if active else "transparent",
+                        text_color=ON_ACCENT if active else TEXT)
         if key == "diag" and not getattr(self, "_diag_loaded", False):
             self._diag_loaded = True
             self.on_diag_run()
@@ -242,19 +255,25 @@ class ZapretApp(ctk.CTk):
                                       scrollbar_button_color=CARD_BG)
 
     def _title(self, parent, text, subtitle=None):
-        ctk.CTkLabel(parent, text=text, font=(FONT, 24, "bold"), text_color=TEXT,
-                     anchor="w").pack(fill="x", padx=6, pady=(8, 2))
+        ctk.CTkLabel(parent, text=text, font=(FONT_DISPLAY, 25), text_color=TEXT,
+                     anchor="w").pack(fill="x", padx=6, pady=(10, 2))
         if subtitle:
             ctk.CTkLabel(parent, text=subtitle, font=(FONT, 12), text_color=MUTED,
                          anchor="w", justify="left", wraplength=720).pack(
                 fill="x", padx=6, pady=(0, 10))
 
     def _section(self, parent, text):
-        ctk.CTkLabel(parent, text=text.upper(), font=(FONT, 12, "bold"),
-                     text_color=MUTED, anchor="w").pack(fill="x", padx=8, pady=(16, 4))
+        # эйбрау-метка секции: акцентная риска + капс
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=8, pady=(18, 6))
+        ctk.CTkFrame(row, width=14, height=2, corner_radius=1,
+                     fg_color=ACCENT).pack(side="left", pady=(1, 0))
+        ctk.CTkLabel(row, text="  " + text.upper(), font=(FONT_DISPLAY, 11),
+                     text_color=MUTED, anchor="w").pack(side="left")
 
     def _card(self, parent):
-        f = ctk.CTkFrame(parent, corner_radius=12, fg_color=CARD_BG)
+        f = ctk.CTkFrame(parent, corner_radius=14, fg_color=CARD_BG,
+                         border_width=1, border_color=BORDER)
         f.pack(fill="x", padx=4, pady=5)
         f.grid_columnconfigure(1, weight=1)
         return f
@@ -263,7 +282,7 @@ class ZapretApp(ctk.CTk):
         f = self._card(parent)
         ctk.CTkLabel(f, text=icon, font=(FONT, 22)).grid(
             row=0, column=0, rowspan=2, padx=(16, 12), pady=14)
-        ctk.CTkLabel(f, text=title, font=(FONT, 14, "bold"), text_color=TEXT,
+        ctk.CTkLabel(f, text=title, font=(FONT_DISPLAY, 14), text_color=TEXT,
                      anchor="w").grid(row=0, column=1, sticky="sw", pady=(14, 0))
         ctk.CTkLabel(f, text=subtitle, font=(FONT, 11), text_color=MUTED,
                      anchor="w").grid(row=1, column=1, sticky="nw", pady=(0, 14))
@@ -284,17 +303,21 @@ class ZapretApp(ctk.CTk):
                     "Выберите пресет и запустите обход. Пресеты хранятся в "
                     "presets.json. Тонкая настройка — в разделе «Настройки».")
 
-        # --- плитка-дашборд: статус + здоровье + Старт/Стоп ---
+        # --- плитка-дашборд: статус + здоровье + Старт/Стоп (сигнатура) ---
         self._section(p, "Состояние")
-        card = ctk.CTkFrame(p, corner_radius=14, fg_color=CARD_BG)
+        card = ctk.CTkFrame(p, corner_radius=14, fg_color=CARD_BG,
+                            border_width=1, border_color=BORDER)
         card.pack(fill="x", padx=4, pady=5)
+        # акцентная риска сверху — «живой сигнал»
+        ctk.CTkFrame(card, height=3, corner_radius=2, fg_color=ACCENT).pack(
+            fill="x", padx=24, pady=(10, 0))
 
         top = ctk.CTkFrame(card, fg_color="transparent")
-        top.pack(fill="x", padx=4, pady=(4, 0))
+        top.pack(fill="x", padx=4, pady=(2, 0))
         top.grid_columnconfigure(1, weight=1)
         self.ctl_dot = ctk.CTkLabel(top, text="●", font=(FONT, 30), text_color=MUTED)
         self.ctl_dot.grid(row=0, column=0, rowspan=2, padx=(20, 14), pady=16)
-        self.ctl_status_title = ctk.CTkLabel(top, text="Проверка…", font=(FONT, 19, "bold"),
+        self.ctl_status_title = ctk.CTkLabel(top, text="Проверка…", font=(FONT_DISPLAY, 20),
                                              text_color=TEXT, anchor="w")
         self.ctl_status_title.grid(row=0, column=1, sticky="sw", pady=(16, 0))
         self.ctl_status_sub = ctk.CTkLabel(top, text="", font=(FONT, 12),
@@ -308,7 +331,7 @@ class ZapretApp(ctk.CTk):
         self.btn_stop = self._btn(btns, "■  Остановить", self.on_stop, width=150)
         self.btn_stop.pack(side="left", padx=4)
 
-        ctk.CTkFrame(card, height=1, fg_color=SWITCH_BORDER).pack(
+        ctk.CTkFrame(card, height=1, fg_color=BORDER).pack(
             fill="x", padx=18, pady=(2, 0))
 
         hb = ctk.CTkFrame(card, fg_color="transparent")
@@ -370,7 +393,9 @@ class ZapretApp(ctk.CTk):
         c = self._card_row(p, "🎮", "Игровой фильтр", "Расширяет диапазон портов для игр")
         self.game_seg = ctk.CTkSegmentedButton(
             c, values=["Выкл", "TCP+UDP", "TCP", "UDP"], command=self._on_game_seg,
-            font=(FONT, 12), text_color=TEXT, selected_color=ACCENT, selected_hover_color=ACCENT_HOVER)
+            font=(FONT, 12), text_color=TEXT, selected_color=SEG_SEL,
+            selected_hover_color=SEG_SEL_HOVER, fg_color=FIELD_BG,
+            unselected_color=FIELD_BG, unselected_hover_color=BTN_HOVER)
         self.game_seg.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
         self.game_seg.set({"off": "Выкл", "all": "TCP+UDP", "tcp": "TCP",
                            "udp": "UDP"}[zc.get_game_mode()])
@@ -403,8 +428,10 @@ class ZapretApp(ctk.CTk):
         ctk.CTkSegmentedButton(box, values=["Cloudflare", "Google"],
                                variable=self.doh_provider, font=(FONT, 12),
                                command=self._on_doh_provider_change,
-                               text_color=TEXT, selected_color=ACCENT,
-                               selected_hover_color=ACCENT_HOVER).pack(side="left", padx=6)
+                               text_color=TEXT, selected_color=SEG_SEL,
+                               selected_hover_color=SEG_SEL_HOVER, fg_color=FIELD_BG,
+                               unselected_color=FIELD_BG,
+                               unselected_hover_color=BTN_HOVER).pack(side="left", padx=6)
         self.doh_switch = ctk.CTkSwitch(box, text="", command=self._on_doh_toggle,
                                         progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
                                         border_width=2, border_color=SWITCH_BORDER)
@@ -813,12 +840,16 @@ class ZapretApp(ctk.CTk):
         ctk.CTkSegmentedButton(c, values=list(APPEARANCE.keys()),
                                variable=self.appearance_var, font=(FONT, 12),
                                command=self._on_appearance_change,
-                               text_color=TEXT, selected_color=ACCENT,
-                               selected_hover_color=ACCENT_HOVER).grid(
+                               text_color=TEXT, selected_color=SEG_SEL,
+                               selected_hover_color=SEG_SEL_HOVER, fg_color=FIELD_BG,
+                               unselected_color=FIELD_BG,
+                               unselected_hover_color=BTN_HOVER).grid(
             row=0, column=2, rowspan=2, padx=14, pady=12)
 
         c = self._card_row(p, "🎨", "Акцентный цвет", "Цвет кнопок и выделения")
-        self.theme_var = ctk.StringVar(value=self.cfg.get("accent_name", "Фиолетовая"))
+        self.theme_var = ctk.StringVar(
+            value=self.cfg.get("accent_name") if self.cfg.get("accent_name") in THEMES
+            else "Сигнальная")
         ctk.CTkOptionMenu(c, values=list(THEMES.keys()), variable=self.theme_var,
                           command=self._on_theme_change, width=160, height=36,
                           font=(FONT, 13), corner_radius=8, fg_color=FIELD_BG, text_color=TEXT,
