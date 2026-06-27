@@ -85,6 +85,26 @@ def _pick(c):
         return c[1] if ctk.get_appearance_mode() == "Dark" else c[0]
     return c
 
+
+def _lighten(hexc, amt):
+    """Смешать цвет с белым на долю amt (0..1) — для светлого оттенка акцента."""
+    h = hexc.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    r = int(r + (255 - r) * amt)
+    g = int(g + (255 - g) * amt)
+    b = int(b + (255 - b) * amt)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _apply_accent(name):
+    """Обновить глобальные ACCENT/ACCENT_HOVER/SEG_SEL из выбранной темы.
+    SEG_SEL/HOVER выводятся из акцента, чтобы выбранный сегмент совпадал по цвету."""
+    global ACCENT, ACCENT_HOVER, SEG_SEL, SEG_SEL_HOVER
+    ACCENT, ACCENT_HOVER = THEMES.get(name, THEMES["Сигнальная"])
+    SEG_SEL = (_lighten(ACCENT, 0.62), ACCENT)
+    SEG_SEL_HOVER = (_lighten(ACCENT_HOVER, 0.62), ACCENT_HOVER)
+
+
 APP_NAME = "Zapret GUI"
 
 
@@ -104,9 +124,7 @@ class ZapretApp(ctk.CTk):
         self.cfg = zc.load_config()
         # оформление — задать режим (тёмная/светлая) и акцент до построения UI
         ctk.set_appearance_mode(self.cfg.get("appearance", "dark"))
-        global ACCENT, ACCENT_HOVER
-        _theme = self.cfg.get("accent_name", "Сигнальная")
-        ACCENT, ACCENT_HOVER = THEMES.get(_theme, THEMES["Сигнальная"])
+        _apply_accent(self.cfg.get("accent_name", "Сигнальная"))
         self.presets = zc.load_presets()
         self.preset_by_name = {p["name"]: p for p in self.presets}
         self.proc = None
@@ -192,6 +210,7 @@ class ZapretApp(ctk.CTk):
         side = ctk.CTkFrame(self, width=212, corner_radius=0, fg_color=SIDEBAR_BG)
         side.grid(row=0, column=0, sticky="nsew")
         side.grid_propagate(False)
+        self._sidebar = side
 
         head = ctk.CTkFrame(side, fg_color="transparent")
         head.pack(fill="x", padx=14, pady=(20, 16))
@@ -261,6 +280,7 @@ class ZapretApp(ctk.CTk):
         return self.pages[key]
 
     def _show_page(self, key):
+        self._current_page = key
         self._ensure_page(key)
         for page in self.pages.values():
             page.grid_remove()
@@ -639,12 +659,15 @@ class ZapretApp(ctk.CTk):
         # тема-зависимые теги строк таблицы (re-применяются при смене темы)
         if not hasattr(self, "tree"):
             return
-        self.tree.tag_configure("best",
-                                background=_pick(("#d8f1e2", "#173d17")),
-                                foreground=_pick(("#137a43", "#9af0bf")))
-        self.tree.tag_configure("good", foreground=GREEN)
-        self.tree.tag_configure("partial", foreground=YELLOW)
-        self.tree.tag_configure("bad", foreground=RED)
+        try:
+            self.tree.tag_configure("best",
+                                    background=_pick(("#d8f1e2", "#173d17")),
+                                    foreground=_pick(("#137a43", "#9af0bf")))
+            self.tree.tag_configure("good", foreground=GREEN)
+            self.tree.tag_configure("partial", foreground=YELLOW)
+            self.tree.tag_configure("bad", foreground=RED)
+        except Exception:           # таблица могла быть пересоздана (смена акцента)
+            pass
 
     # -- страница: Telegram ----------------------------------------------- #
     def _build_tgws_page(self):
@@ -1535,16 +1558,32 @@ class ZapretApp(ctk.CTk):
         self.log_msg(f"Тема: {value.lower()}.")
 
     def _on_theme_change(self, value):
+        # акцент применяется СРАЗУ, без перезапуска — пересобираем интерфейс
+        _apply_accent(value)
         self.cfg["accent_name"] = value
         zc.save_config(self.cfg)
-        if messagebox.askyesno("Тема", f"Тема «{value}» применится после перезапуска.\n"
-                               "Перезапустить приложение сейчас?"):
-            try:
-                zc.relaunch_app()
-            except Exception as e:
-                self.log_msg(f"[ОШИБКА] перезапуск: {e}")
-                return
-            self.after(300, self._real_quit)
+        self._rebuild_ui()
+        self.log_msg(f"Акцент: {value}.")
+
+    def _rebuild_ui(self):
+        """Пересобрать сайдбар и страницы под новый акцент (на месте, без
+        перезапуска процесса). Динамика восстанавливается после пересборки."""
+        cur = getattr(self, "_current_page", "control")
+        for attr in ("_sidebar", "container"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+        self.pages = {}
+        self.nav_buttons = {}
+        self.nav_badges = {}
+        self._init_ttk_style()
+        self._build_layout()
+        self._show_page(cur)
+        self._render_log()
+        self.refresh_status()
 
     def on_add_defender_exclusion(self):
         self.log_msg("Добавляю папку в исключения Windows Defender…")
