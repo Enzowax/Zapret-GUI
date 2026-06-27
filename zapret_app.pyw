@@ -284,44 +284,56 @@ class ZapretApp(ctk.CTk):
                     "Выберите пресет и запустите обход. Пресеты хранятся в "
                     "presets.json. Тонкая настройка — в разделе «Настройки».")
 
-        self._section(p, "Статус работы")
-        c = self._card(p)
-        self.ctl_dot = ctk.CTkLabel(c, text="●", font=(FONT, 24), text_color=MUTED)
-        self.ctl_dot.grid(row=0, column=0, rowspan=2, padx=(16, 12), pady=14)
-        self.ctl_status_title = ctk.CTkLabel(c, text="Проверка…", font=(FONT, 14, "bold"),
-                                             text_color=TEXT, anchor="w")
-        self.ctl_status_title.grid(row=0, column=1, sticky="sw", pady=(14, 0))
-        self.ctl_status_sub = ctk.CTkLabel(c, text="", font=(FONT, 11),
-                                           text_color=MUTED, anchor="w")
-        self.ctl_status_sub.grid(row=1, column=1, sticky="nw", pady=(0, 14))
+        # --- плитка-дашборд: статус + здоровье + Старт/Стоп ---
+        self._section(p, "Состояние")
+        card = ctk.CTkFrame(p, corner_radius=14, fg_color=CARD_BG)
+        card.pack(fill="x", padx=4, pady=5)
 
-        self._section(p, "Здоровье обхода")
-        c = self._card(p)
-        hb = ctk.CTkFrame(c, fg_color="transparent")
-        hb.grid(row=0, column=0, columnspan=4, padx=14, pady=14, sticky="w")
+        top = ctk.CTkFrame(card, fg_color="transparent")
+        top.pack(fill="x", padx=4, pady=(4, 0))
+        top.grid_columnconfigure(1, weight=1)
+        self.ctl_dot = ctk.CTkLabel(top, text="●", font=(FONT, 30), text_color=MUTED)
+        self.ctl_dot.grid(row=0, column=0, rowspan=2, padx=(20, 14), pady=16)
+        self.ctl_status_title = ctk.CTkLabel(top, text="Проверка…", font=(FONT, 19, "bold"),
+                                             text_color=TEXT, anchor="w")
+        self.ctl_status_title.grid(row=0, column=1, sticky="sw", pady=(16, 0))
+        self.ctl_status_sub = ctk.CTkLabel(top, text="", font=(FONT, 12),
+                                           text_color=MUTED, anchor="w")
+        self.ctl_status_sub.grid(row=1, column=1, sticky="nw", pady=(0, 16))
+        btns = ctk.CTkFrame(top, fg_color="transparent")
+        btns.grid(row=0, column=2, rowspan=2, padx=16, pady=12)
+        self.btn_start = self._btn(btns, "▶  Запустить", self.on_start,
+                                   accent=True, width=150)
+        self.btn_start.pack(side="left", padx=4)
+        self.btn_stop = self._btn(btns, "■  Остановить", self.on_stop, width=150)
+        self.btn_stop.pack(side="left", padx=4)
+
+        ctk.CTkFrame(card, height=1, fg_color=SWITCH_BORDER).pack(
+            fill="x", padx=18, pady=(2, 0))
+
+        hb = ctk.CTkFrame(card, fg_color="transparent")
+        hb.pack(fill="x", padx=18, pady=12)
         self.health_widgets = {}
         for key, label in [("discord", "Discord"), ("youtube", "YouTube"),
                            ("google", "Google")]:
             cell = ctk.CTkFrame(hb, fg_color="transparent")
-            cell.pack(side="left", padx=(0, 22))
-            dot = ctk.CTkLabel(cell, text="●", font=(FONT, 18), text_color=MUTED)
+            cell.pack(side="left", padx=(0, 20))
+            dot = ctk.CTkLabel(cell, text="●", font=(FONT, 16), text_color=MUTED)
             dot.pack(side="left", padx=(0, 6))
-            txt = ctk.CTkLabel(cell, text=f"{label}: …", font=(FONT, 13),
-                               text_color=TEXT)
+            txt = ctk.CTkLabel(cell, text=f"{label}: …", font=(FONT, 13), text_color=TEXT)
             txt.pack(side="left")
             self.health_widgets[key] = (dot, txt, label)
+        # индикатор Telegram-прокси (обновляется в _apply_status)
+        pcell = ctk.CTkFrame(hb, fg_color="transparent")
+        pcell.pack(side="left", padx=(0, 20))
+        self.dash_proxy_dot = ctk.CTkLabel(pcell, text="●", font=(FONT, 16),
+                                           text_color=MUTED)
+        self.dash_proxy_dot.pack(side="left", padx=(0, 6))
+        self.dash_proxy_lbl = ctk.CTkLabel(pcell, text="Telegram: …", font=(FONT, 13),
+                                           text_color=TEXT)
+        self.dash_proxy_lbl.pack(side="left")
         self._btn(hb, "Проверить", self.on_health_check, width=110).pack(
-            side="left", padx=10)
-
-        self._section(p, "Запуск")
-        c = self._card_row(p, "⚡", "Запуск обхода",
-                           "Запускает winws.exe с выбранным пресетом")
-        box = ctk.CTkFrame(c, fg_color="transparent")
-        box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
-        self.btn_start = self._btn(box, "▶  Запустить", self.on_start, accent=True)
-        self.btn_start.pack(side="left", padx=4)
-        self.btn_stop = self._btn(box, "■  Остановить", self.on_stop)
-        self.btn_stop.pack(side="left", padx=4)
+            side="right", padx=2)
 
         self._section(p, "Пресет обхода блокировок")
         c = self._card_row(p, "⭐", "Текущий пресет", "Выберите стратегию обхода")
@@ -987,6 +999,12 @@ class ZapretApp(ctk.CTk):
             self.tg_dot.configure(text_color=RED)
             self.tg_title.configure(text="Telegram-прокси остановлен")
             self.tg_sub.configure(text="Прокси не запущен")
+        # индикатор прокси на дашборде
+        try:
+            self.dash_proxy_dot.configure(text_color=GREEN if tg else MUTED)
+            self.dash_proxy_lbl.configure(text="Telegram: вкл" if tg else "Telegram: выкл")
+        except Exception:
+            pass
 
         if self.tray is not None:
             try:
