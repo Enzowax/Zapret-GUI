@@ -24,7 +24,7 @@ jobs:
       - name: Install test deps
         run: pip install pytest ruff cryptography
       - name: Lint (реальные баги, не стиль)
-        run: ruff check --select=E9,F63,F7,F82 zapret_core.py zapret_app.pyw tgproxy/ tests/
+        run: ruff check --select=E9,F63,F7,F82 zapret_core.py zapret_app.pyw vpn.py tgproxy/ tests/
       - name: Unit tests
         run: pytest tests/ -q
 

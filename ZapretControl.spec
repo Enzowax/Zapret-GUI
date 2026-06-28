@@ -61,7 +61,7 @@ a = Analysis(
     binaries=ctk_binaries + pil_binaries + pystray_binaries + crypto_binaries,
     datas=datas,
     hiddenimports=(ctk_hidden + pil_hidden + pystray_hidden + crypto_hidden
-                   + ["darkdetect", "zapret_core",
+                   + ["darkdetect", "zapret_core", "vpn",
                       "cryptography.hazmat.primitives.ciphers"]
                    + collect_submodules("tgproxy")
                    + ["tgproxy", "tgproxy.tg_ws_proxy", "tgproxy.config",
