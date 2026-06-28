@@ -151,8 +151,9 @@ def import_servers(text):
 
 def _import_subscription(url):
     """Скачать подписку, пробуя UA известных клиентов; распознать и Xray-JSON,
-    и base64/текст со ссылками. Вернуть реальные серверы (не заглушки)."""
-    fallback = []
+    и base64/текст со ссылками. Вернуть набор с НАИБОЛЬШИМ числом реальных
+    серверов (некоторые панели полный список отдают только определённому UA)."""
+    best, fallback = [], []
     for ua in SUB_USER_AGENTS:
         body = _http_get(url, ua).strip()
         if not body:
@@ -167,10 +168,12 @@ def _import_subscription(url):
             links = _extract_links(body) or _extract_links(_b64d_safe(body))
             servers = _servers_from_links(links)
         real = [s for s in servers if not _is_placeholder(s["name"])]
-        if real:
-            return real
+        if len(real) > len(best):
+            best = real
         fallback = fallback or servers
-    return fallback
+        if len(best) > 1:                          # нашли полноценный список
+            break
+    return best or fallback
 
 
 def parse_share_link(link):

@@ -98,7 +98,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.35.3-beta"
+APP_VERSION = "2.35.4-beta"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"

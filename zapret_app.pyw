@@ -982,6 +982,12 @@ class ZapretApp(ctk.CTk):
             self.cfg["vpn_active"] = (added or found)[-1]["name"]
             zc.save_config(self.cfg)
             self.log_msg(f"[VPN] добавлено серверов: {len(added)} (всего {len(servers)}).")
+            is_url = text.startswith(("http://", "https://")) and "\n" not in text
+            if is_url and len(found) <= 1:
+                self.log_msg("[VPN] подписка вернула 1 сервер — провайдер, видимо, "
+                             "отдаёт полный список локаций только своему приложению. "
+                             "Экспортируйте ссылки серверов из него и вставьте сюда "
+                             "(по одной в строке).")
 
             def done():
                 self.vpn_link.delete("1.0", "end")
