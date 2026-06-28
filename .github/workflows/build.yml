@@ -63,4 +63,6 @@ jobs:
         with:
           name: Zapret GUI ${{ github.ref_name }}
           generate_release_notes: true
+          # тег с дефисом (vX.Y.Z-beta) -> pre-release: авто-апдейтер его не видит
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: ZapretControl.zip
