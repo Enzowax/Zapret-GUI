@@ -343,6 +343,35 @@ class ZapretApp(ctk.CTk):
             hover_color=ACCENT_HOVER if accent else BTN_HOVER,
             text_color="#ffffff" if accent else TEXT)
 
+    def _enable_clipboard(self, widget):
+        """Копирование/вставка/вырезание/выделение по keycode — работают и на
+        нелатинской (русской) раскладке, где Tk не ловит Ctrl+C/V по символу."""
+        def on_key(e):
+            if not (e.state & 0x4):          # требуется Control
+                return None
+            w, kc = e.widget, e.keycode
+            if kc == 67:                     # C
+                w.event_generate("<<Copy>>")
+            elif kc == 86:                   # V
+                w.event_generate("<<Paste>>")
+            elif kc == 88:                   # X
+                w.event_generate("<<Cut>>")
+            elif kc == 65:                   # A — выделить всё
+                try:
+                    w.tag_add("sel", "1.0", "end")        # для Text
+                except Exception:
+                    try:
+                        w.select_range(0, "end")          # для Entry
+                    except Exception:
+                        pass
+            else:
+                return None
+            return "break"
+        try:
+            widget.bind("<Key>", on_key)
+        except Exception:
+            pass
+
     # -- страница: Управление --------------------------------------------- #
     def _build_control_page(self):
         p = self._page()
@@ -531,6 +560,7 @@ class ZapretApp(ctk.CTk):
                                         fg_color=LOG_BG, text_color=LOG_FG,
                                         border_width=0, wrap="none")
         self.sites_box.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+        self._enable_clipboard(self.sites_box)
         hint = ("Можно вставлять и ссылки целиком (https://site.com/...) — лишнее "
                 "уберётся само. www. и дубли отбрасываются.")
         ctk.CTkLabel(c, text=hint, font=(FONT, 11), text_color=MUTED,
@@ -845,16 +875,38 @@ class ZapretApp(ctk.CTk):
                                     anchor="w")
         self.vpn_sub.grid(row=1, column=1, sticky="nw", pady=(0, 14))
 
-        self._section(p, "Сервер")
+        self._section(p, "Серверы · локация")
+        c = self._card_row(p, "📍", "Выбранный сервер", "Локация для подключения")
+        box = ctk.CTkFrame(c, fg_color="transparent")
+        box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
+        self.vpn_server_var = ctk.StringVar()
+        self.vpn_server_menu = ctk.CTkOptionMenu(
+            box, values=["— нет серверов —"], variable=self.vpn_server_var, width=280,
+            height=36, font=(FONT, 13), corner_radius=8, fg_color=FIELD_BG,
+            text_color=TEXT, dropdown_fg_color=CARD_BG, dropdown_text_color=TEXT,
+            button_color=ACCENT, button_hover_color=ACCENT_HOVER,
+            command=self._on_vpn_server_pick)
+        self.vpn_server_menu.pack(side="left", padx=4)
+        self._btn(box, "Удалить", self.on_vpn_server_delete, width=100).pack(
+            side="left", padx=4)
+
+        self._section(p, "Добавить сервер")
         c = self._card(p)
-        self.vpn_link = ctk.CTkTextbox(c, height=70, font=(FONT_MONO, 12),
+        self.vpn_link = ctk.CTkTextbox(c, height=64, font=(FONT_MONO, 12),
                                        fg_color=LOG_BG, text_color=LOG_FG,
                                        border_width=0, wrap="char")
         self.vpn_link.pack(fill="x", padx=12, pady=(12, 6))
-        self.vpn_link.insert("1.0", self.cfg.get("vpn_link", ""))
-        ctk.CTkLabel(c, text="Вставьте ссылку подключения: vless:// · vmess:// · "
-                     "trojan:// · ss://", font=(FONT, 11), text_color=MUTED,
-                     anchor="w").pack(fill="x", padx=14, pady=(0, 10))
+        self._enable_clipboard(self.vpn_link)
+        addbox = ctk.CTkFrame(c, fg_color="transparent")
+        addbox.pack(fill="x", padx=12, pady=(0, 10))
+        self._btn(addbox, "➕  Добавить", self.on_vpn_add_server, accent=True,
+                  width=140).pack(side="left", padx=2)
+        ctk.CTkLabel(addbox, text="ссылки vless/vmess/trojan/ss (по одной в строке) "
+                     "или ссылку на подписку (URL / base64)", font=(FONT, 11),
+                     text_color=MUTED, anchor="w", justify="left",
+                     wraplength=560).pack(side="left", padx=12)
+
+        self._refresh_vpn_servers()
 
         self._section(p, "Режим и запуск")
         c = self._card(p)
@@ -882,16 +934,72 @@ class ZapretApp(ctk.CTk):
         self._refresh_vpn_status()
         return p
 
+    def _vpn_servers(self):
+        return self.cfg.get("vpn_servers", []) or []
+
+    def _vpn_active_link(self):
+        name = self.vpn_server_var.get()
+        for s in self._vpn_servers():
+            if s["name"] == name:
+                return s["link"]
+        return None
+
+    def _refresh_vpn_servers(self):
+        servers = self._vpn_servers()
+        names = [s["name"] for s in servers] or ["— нет серверов —"]
+        self.vpn_server_menu.configure(values=names)
+        active = self.cfg.get("vpn_active")
+        self.vpn_server_var.set(active if active in names else names[0])
+
+    def _on_vpn_server_pick(self, value):
+        self.cfg["vpn_active"] = value
+        zc.save_config(self.cfg)
+
+    def on_vpn_add_server(self):
+        text = self.vpn_link.get("1.0", "end").strip()
+        if not text:
+            messagebox.showwarning("VPN", "Вставьте ссылку(и) или ссылку на подписку.")
+            return
+
+        def worker():
+            found = vpnmod.import_servers(text)
+            if not found:
+                self.log_msg("[VPN] не найдено валидных ссылок (vless/vmess/trojan/ss).")
+                return
+            servers = self._vpn_servers()
+            have = {s["link"] for s in servers}
+            added = [s for s in found if s["link"] not in have]
+            servers.extend(added)
+            self.cfg["vpn_servers"] = servers
+            self.cfg["vpn_active"] = (added or found)[-1]["name"]
+            zc.save_config(self.cfg)
+            self.log_msg(f"[VPN] добавлено серверов: {len(added)} (всего {len(servers)}).")
+
+            def done():
+                self.vpn_link.delete("1.0", "end")
+                self._refresh_vpn_servers()
+            self.post(done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_vpn_server_delete(self):
+        name = self.vpn_server_var.get()
+        servers = [s for s in self._vpn_servers() if s["name"] != name]
+        self.cfg["vpn_servers"] = servers
+        self.cfg.pop("vpn_active", None)
+        zc.save_config(self.cfg)
+        self._refresh_vpn_servers()
+        self.log_msg(f"[VPN] сервер «{name}» удалён.")
+
     def on_vpn_connect(self):
-        link = self.vpn_link.get("1.0", "end").strip()
+        link = self._vpn_active_link()
         if not link:
-            messagebox.showwarning("VPN", "Вставьте ссылку подключения (vless/vmess/"
-                                   "trojan/ss).")
+            messagebox.showwarning("VPN", "Сначала добавьте сервер и выберите его "
+                                   "в списке локаций.")
             return
         mode = "tunnel" if self.vpn_mode.get() == "Туннель" else "proxy"
         sysproxy = bool(self.vpn_sysproxy.get())
-        self.cfg.update({"vpn_link": link, "vpn_mode": self.vpn_mode.get(),
-                         "vpn_sysproxy": sysproxy})
+        self.cfg.update({"vpn_mode": self.vpn_mode.get(), "vpn_sysproxy": sysproxy})
         zc.save_config(self.cfg)
         self.vpn_title.configure(text="Подключение… (возможна загрузка ядра)")
         self.log_msg(f"[VPN] подключение в режиме «{self.vpn_mode.get()}»…")
@@ -1166,10 +1274,12 @@ class ZapretApp(ctk.CTk):
         bar.grid_columnconfigure(0, weight=1)
         self.log_filter_var = ctk.StringVar()
         self.log_filter_var.trace_add("write", lambda *a: self._render_log())
-        ctk.CTkEntry(bar, textvariable=self.log_filter_var, height=34, font=(FONT, 12),
-                     placeholder_text="Фильтр по тексту…", fg_color=FIELD_BG,
-                     text_color=TEXT, border_color=BORDER, border_width=1).grid(
-            row=0, column=0, sticky="ew", padx=(0, 8))
+        _flt = ctk.CTkEntry(bar, textvariable=self.log_filter_var, height=34,
+                            font=(FONT, 12), placeholder_text="Фильтр по тексту…",
+                            fg_color=FIELD_BG, text_color=TEXT, border_color=BORDER,
+                            border_width=1)
+        _flt.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self._enable_clipboard(_flt)
         self.log_count_lbl = ctk.CTkLabel(bar, text="", font=(FONT, 11), text_color=MUTED)
         self.log_count_lbl.grid(row=0, column=1, padx=(0, 8))
         self._btn(bar, "Копировать", self.on_copy_log, width=120).grid(row=0, column=2, padx=4)

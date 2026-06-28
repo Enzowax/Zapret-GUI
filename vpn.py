@@ -58,6 +58,47 @@ def _b64d(s):
     return base64.b64decode(s).decode("utf-8", "replace")
 
 
+_SCHEMES = ("vless://", "vmess://", "trojan://", "ss://")
+
+
+def _extract_links(text):
+    return [ln.strip() for ln in text.replace("\r", "\n").split("\n")
+            if ln.strip().startswith(_SCHEMES)]
+
+
+def import_servers(text):
+    """Из текста — одна ссылка, несколько строк, base64-подписка или URL подписки —
+    вернуть список {name, link}. Имя берётся из #фрагмента ссылки."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    # URL подписки -> скачать содержимое
+    if (text.startswith(("http://", "https://")) and "\n" not in text
+            and not text.startswith(_SCHEMES)):
+        try:
+            req = urllib.request.Request(text, headers={"User-Agent": "ZapretGUI"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                text = r.read().decode("utf-8", "replace")
+        except Exception:
+            return []
+    links = _extract_links(text)
+    if not links:                       # возможно, это base64-блоб подписки
+        try:
+            links = _extract_links(_b64d(text))
+        except Exception:
+            links = []
+    out, seen = [], set()
+    for lk in links:
+        if lk in seen:
+            continue
+        seen.add(lk)
+        p = parse_share_link(lk)
+        if p:
+            out.append({"name": (p.get("name") or p.get("address") or "server")[:60],
+                        "link": lk})
+    return out
+
+
 def parse_share_link(link):
     """vless://… | vmess://… | trojan://… | ss://… -> dict или None."""
     link = (link or "").strip()
