@@ -937,11 +937,11 @@ class ZapretApp(ctk.CTk):
     def _vpn_servers(self):
         return self.cfg.get("vpn_servers", []) or []
 
-    def _vpn_active_link(self):
+    def _vpn_active_server(self):
         name = self.vpn_server_var.get()
         for s in self._vpn_servers():
             if s["name"] == name:
-                return s["link"]
+                return s
         return None
 
     def _refresh_vpn_servers(self):
@@ -992,8 +992,8 @@ class ZapretApp(ctk.CTk):
         self.log_msg(f"[VPN] сервер «{name}» удалён.")
 
     def on_vpn_connect(self):
-        link = self._vpn_active_link()
-        if not link:
+        server = self._vpn_active_server()
+        if not server:
             messagebox.showwarning("VPN", "Сначала добавьте сервер и выберите его "
                                    "в списке локаций.")
             return
@@ -1005,7 +1005,7 @@ class ZapretApp(ctk.CTk):
         self.log_msg(f"[VPN] подключение в режиме «{self.vpn_mode.get()}»…")
 
         def worker():
-            ok, msg = vpnmod.vpn_start(link, mode=mode, system_proxy=sysproxy)
+            ok, msg = vpnmod.vpn_start(server, mode=mode, system_proxy=sysproxy)
             self.log_msg("[VPN] " + msg)
             self.post(self._refresh_vpn_status)
 

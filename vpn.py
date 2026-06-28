@@ -66,27 +66,64 @@ def _extract_links(text):
             if ln.strip().startswith(_SCHEMES)]
 
 
-def import_servers(text):
-    """Из текста — одна ссылка, несколько строк, base64-подписка или URL подписки —
-    вернуть список {name, link}. Имя берётся из #фрагмента ссылки."""
-    text = (text or "").strip()
-    if not text:
-        return []
-    # URL подписки -> скачать содержимое
-    if (text.startswith(("http://", "https://")) and "\n" not in text
-            and not text.startswith(_SCHEMES)):
-        try:
-            req = urllib.request.Request(text, headers={"User-Agent": "ZapretGUI"})
-            with urllib.request.urlopen(req, timeout=20) as r:
-                text = r.read().decode("utf-8", "replace")
-        except Exception:
-            return []
-    links = _extract_links(text)
-    if not links:                       # возможно, это base64-блоб подписки
-        try:
-            links = _extract_links(_b64d(text))
-        except Exception:
-            links = []
+# UA известных клиентов: многие подписочные панели отдают реальные конфиги
+# только распознанным приложениям (иначе — заглушку «не поддерживается»).
+# v2rayTun первым: ряд панелей именно ему отдают полноценный Xray-JSON.
+SUB_USER_AGENTS = ["v2rayTun/2.9.0", "Streisand", "Happ/1.16.0", "Hiddify/2.5.0",
+                   "v2rayNG/1.9.5", "v2rayN/7.0", "clash-verge/1.5.0"]
+
+_PLACEHOLDER_WORDS = ("поддерж", "support", "unsupport", "traffic", "трафик",
+                      "expire", "истек", "осталось", "subscription", "подписк")
+
+
+def _is_placeholder(name):
+    n = (name or "").lower()
+    return any(w in n for w in _PLACEHOLDER_WORDS)
+
+
+def _b64d_safe(text):
+    try:
+        return _b64d(text)
+    except Exception:
+        return ""
+
+
+def _http_get(url, ua):
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept": "*/*"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def _outbound_addr(ob):
+    s = ob.get("settings", {})
+    vn = s.get("vnext") or s.get("servers") or [{}]
+    a = vn[0] if vn else {}
+    return "%s:%s" % (a.get("address", "?"), a.get("port", "?"))
+
+
+def _servers_from_json(data):
+    """Xray-JSON подписки (формат v2rayTun): массив конфигов или один конфиг.
+    Берём прокси-outbound каждого. Плейсхолдер-имя заменяем на адрес сервера."""
+    cfgs = data if isinstance(data, list) else [data]
+    out = []
+    for cfg in cfgs:
+        if not isinstance(cfg, dict):
+            continue
+        remark = cfg.get("remarks") or cfg.get("name") or ""
+        for ob in cfg.get("outbounds", []):
+            if ob.get("protocol") in ("vless", "vmess", "trojan", "shadowsocks"):
+                name = remark if remark and not _is_placeholder(remark) else _outbound_addr(ob)
+                ob = dict(ob)
+                ob["tag"] = "proxy"
+                out.append({"name": str(name)[:60], "outbound": ob})
+                break
+    return out
+
+
+def _servers_from_links(links):
     out, seen = [], set()
     for lk in links:
         if lk in seen:
@@ -97,6 +134,43 @@ def import_servers(text):
             out.append({"name": (p.get("name") or p.get("address") or "server")[:60],
                         "link": lk})
     return out
+
+
+def import_servers(text):
+    """Из ввода — ссылка(и), base64-блоб, или URL подписки — вернуть список
+    серверов {name, link} либо {name, outbound}."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    if (text.startswith(("http://", "https://")) and "\n" not in text
+            and not text.startswith(_SCHEMES)):
+        return _import_subscription(text)
+    links = _extract_links(text) or _extract_links(_b64d_safe(text))
+    return _servers_from_links(links)
+
+
+def _import_subscription(url):
+    """Скачать подписку, пробуя UA известных клиентов; распознать и Xray-JSON,
+    и base64/текст со ссылками. Вернуть реальные серверы (не заглушки)."""
+    fallback = []
+    for ua in SUB_USER_AGENTS:
+        body = _http_get(url, ua).strip()
+        if not body:
+            continue
+        servers = []
+        if body[:1] in "[{":                       # Xray-JSON (v2rayTun)
+            try:
+                servers = _servers_from_json(json.loads(body))
+            except Exception:
+                servers = []
+        if not servers:                            # base64 / текст со ссылками
+            links = _extract_links(body) or _extract_links(_b64d_safe(body))
+            servers = _servers_from_links(links)
+        real = [s for s in servers if not _is_placeholder(s["name"])]
+        if real:
+            return real
+        fallback = fallback or servers
+    return fallback
 
 
 def parse_share_link(link):
@@ -240,7 +314,9 @@ def _build_outbound(p):
             "streamSettings": _stream_settings(p)}
 
 
-def build_xray_config(p, socks_port=SOCKS_PORT, http_port=HTTP_PORT):
+def _config_with_outbound(out, socks_port=SOCKS_PORT, http_port=HTTP_PORT):
+    out = dict(out)
+    out["tag"] = "proxy"
     return {
         "log": {"loglevel": "warning"},
         "inbounds": [
@@ -251,11 +327,32 @@ def build_xray_config(p, socks_port=SOCKS_PORT, http_port=HTTP_PORT):
              "protocol": "http"},
         ],
         "outbounds": [
-            _build_outbound(p),
+            out,
             {"tag": "direct", "protocol": "freedom"},
             {"tag": "block", "protocol": "blackhole"},
         ],
     }
+
+
+def build_xray_config(p, socks_port=SOCKS_PORT, http_port=HTTP_PORT):
+    return _config_with_outbound(_build_outbound(p), socks_port, http_port)
+
+
+def _server_outbound(server):
+    """server: dict {link} | {outbound} | строка-ссылка -> (outbound, name, address)
+    или (None, '', '')."""
+    if isinstance(server, dict) and server.get("outbound"):
+        ob = server["outbound"]
+        s = ob.get("settings", {})
+        vn = s.get("vnext") or s.get("servers") or [{}]
+        addr = (vn[0] if vn else {}).get("address", "")
+        return ob, server.get("name") or addr, addr
+    link = server.get("link") if isinstance(server, dict) else server
+    p = parse_share_link(link)
+    if not p or not p.get("address"):
+        return None, "", ""
+    name = (server.get("name") if isinstance(server, dict) else None) or p.get("name") or p["address"]
+    return _build_outbound(p), name, p["address"]
 
 
 # --------------------------------------------------------------------------- #
@@ -394,15 +491,16 @@ def vpn_status():
             "xray": os.path.exists(XRAY_EXE)}
 
 
-def vpn_start(link, mode="proxy", system_proxy=False):
-    """mode: 'proxy' (локальный SOCKS/HTTP, опц. системный прокси) или
-    'tunnel' (полный системный туннель через tun2socks). -> (ok, msg)."""
+def vpn_start(server, mode="proxy", system_proxy=False):
+    """server: dict сервера ({name,link} или {name,outbound}) либо строка-ссылка.
+    mode: 'proxy' (локальный SOCKS/HTTP, опц. системный прокси) или 'tunnel'
+    (полный системный туннель через tun2socks). -> (ok, msg)."""
     global _mode, _server_ip
     if vpn_running():
         vpn_stop()
-    p = parse_share_link(link)
-    if not p or not p.get("address"):
-        return False, "Не удалось разобрать ссылку (поддержка: vless/vmess/trojan/ss)."
+    out, name, addr = _server_outbound(server)
+    if not out:
+        return False, "Не удалось разобрать сервер (vless/vmess/trojan/ss)."
     ok, msg = ensure_xray()
     if not ok:
         return False, msg
@@ -412,25 +510,24 @@ def vpn_start(link, mode="proxy", system_proxy=False):
             return False, msg
     os.makedirs(VPN_DIR, exist_ok=True)
     with open(XRAY_CONFIG, "w", encoding="utf-8") as f:
-        json.dump(build_xray_config(p), f, ensure_ascii=False, indent=2)
+        json.dump(_config_with_outbound(out), f, ensure_ascii=False, indent=2)
     _start_xray()
     try:
-        _server_ip = socket.gethostbyname(p["address"])
+        _server_ip = socket.gethostbyname(addr) if addr else None
     except Exception:
         _server_ip = None
     _mode = mode
     if mode == "proxy":
         if system_proxy:
             set_system_proxy(HTTP_PORT)
-        return True, (f"VPN-прокси «{p['name']}» запущен · "
+        return True, (f"VPN-прокси «{name}» запущен · "
                       f"SOCKS5 127.0.0.1:{SOCKS_PORT} · HTTP :{HTTP_PORT}"
                       + (" · системный прокси включён" if system_proxy else ""))
-    # tunnel
     ok, msg = _start_tunnel()
     if not ok:
         vpn_stop()
         return False, msg
-    return True, f"VPN-туннель «{p['name']}» запущен (весь трафик через VPN)."
+    return True, f"VPN-туннель «{name}» запущен (весь трафик через VPN)."
 
 
 def _start_tunnel():
