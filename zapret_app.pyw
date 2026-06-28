@@ -961,14 +961,22 @@ class ZapretApp(ctk.CTk):
             messagebox.showwarning("VPN", "Вставьте ссылку(и) или ссылку на подписку.")
             return
 
+        def _key(s):                       # серверы бывают {link} и {outbound}
+            return s.get("link") or s.get("name", "")
+
         def worker():
-            found = vpnmod.import_servers(text)
+            try:
+                found = vpnmod.import_servers(text)
+            except Exception as e:
+                self.log_msg(f"[VPN] ошибка разбора: {e}")
+                return
             if not found:
-                self.log_msg("[VPN] не найдено валидных ссылок (vless/vmess/trojan/ss).")
+                self.log_msg("[VPN] не найдено серверов. Проверьте ссылку/подписку "
+                             "(vless/vmess/trojan/ss).")
                 return
             servers = self._vpn_servers()
-            have = {s["link"] for s in servers}
-            added = [s for s in found if s["link"] not in have]
+            have = {_key(s) for s in servers}
+            added = [s for s in found if _key(s) not in have]
             servers.extend(added)
             self.cfg["vpn_servers"] = servers
             self.cfg["vpn_active"] = (added or found)[-1]["name"]
