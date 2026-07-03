@@ -23,4 +23,3 @@ logs/
 .write_test.tmp
 .pytest_cache/
 .ruff_cache/
-vpn/

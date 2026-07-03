@@ -21,7 +21,6 @@ from tkinter import ttk, messagebox, filedialog
 import customtkinter as ctk
 
 import zapret_core as zc
-import vpn as vpnmod
 
 try:
     import pystray
@@ -231,7 +230,6 @@ class ZapretApp(ctk.CTk):
 
         for key, label in [("control", "🛡   Управление"), ("sites", "➕   Свои сайты"),
                            ("auto", "🔍   Авто-поиск"), ("tgws", "✈   Telegram"),
-                           ("vpn", "🌐   VPN"),
                            ("diag", "🩺   Диагностика"), ("settings", "⚙   Настройки"),
                            ("log", "📜   Журнал")]:
             row = ctk.CTkFrame(side, fg_color="transparent")
@@ -266,7 +264,6 @@ class ZapretApp(ctk.CTk):
         self._page_builders = {
             "control": self._build_control_page, "sites": self._build_sites_page,
             "auto": self._build_auto_page, "tgws": self._build_tgws_page,
-            "vpn": self._build_vpn_page,
             "diag": self._build_diag_page, "settings": self._build_settings_page,
             "log": self._build_log_page,
         }
@@ -342,35 +339,6 @@ class ZapretApp(ctk.CTk):
             fg_color=ACCENT if accent else CARD_HOVER,
             hover_color=ACCENT_HOVER if accent else BTN_HOVER,
             text_color="#ffffff" if accent else TEXT)
-
-    def _enable_clipboard(self, widget):
-        """Копирование/вставка/вырезание/выделение по keycode — работают и на
-        нелатинской (русской) раскладке, где Tk не ловит Ctrl+C/V по символу."""
-        def on_key(e):
-            if not (e.state & 0x4):          # требуется Control
-                return None
-            w, kc = e.widget, e.keycode
-            if kc == 67:                     # C
-                w.event_generate("<<Copy>>")
-            elif kc == 86:                   # V
-                w.event_generate("<<Paste>>")
-            elif kc == 88:                   # X
-                w.event_generate("<<Cut>>")
-            elif kc == 65:                   # A — выделить всё
-                try:
-                    w.tag_add("sel", "1.0", "end")        # для Text
-                except Exception:
-                    try:
-                        w.select_range(0, "end")          # для Entry
-                    except Exception:
-                        pass
-            else:
-                return None
-            return "break"
-        try:
-            widget.bind("<Key>", on_key)
-        except Exception:
-            pass
 
     # -- страница: Управление --------------------------------------------- #
     def _build_control_page(self):
@@ -560,7 +528,6 @@ class ZapretApp(ctk.CTk):
                                         fg_color=LOG_BG, text_color=LOG_FG,
                                         border_width=0, wrap="none")
         self.sites_box.pack(fill="both", expand=True, padx=12, pady=(12, 6))
-        self._enable_clipboard(self.sites_box)
         hint = ("Можно вставлять и ссылки целиком (https://site.com/...) — лишнее "
                 "уберётся само. www. и дубли отбрасываются.")
         ctk.CTkLabel(c, text=hint, font=(FONT, 11), text_color=MUTED,
@@ -855,201 +822,6 @@ class ZapretApp(ctk.CTk):
         except Exception as e:
             messagebox.showerror("Лог прокси", str(e))
 
-    # -- страница: VPN (Xray) --------------------------------------------- #
-    def _build_vpn_page(self):
-        p = self._page()
-        self._title(p, "VPN · Xray",
-                    "Экспериментальный VPN-клиент на ядре Xray-core "
-                    "(VLESS / VMess / Trojan / Reality / Shadowsocks). «Прокси» — "
-                    "локальный SOCKS/HTTP; «Туннель» — весь трафик системы через VPN "
-                    "(права администратора). Ядро скачается при первом подключении.")
-
-        self._section(p, "Статус")
-        c = self._card(p)
-        self.vpn_dot = ctk.CTkLabel(c, text="●", font=(FONT, 24), text_color=MUTED)
-        self.vpn_dot.grid(row=0, column=0, rowspan=2, padx=(16, 12), pady=14)
-        self.vpn_title = ctk.CTkLabel(c, text="VPN выключен", font=(FONT_DISPLAY, 14),
-                                      text_color=TEXT, anchor="w")
-        self.vpn_title.grid(row=0, column=1, sticky="sw", pady=(14, 0))
-        self.vpn_sub = ctk.CTkLabel(c, text="", font=(FONT, 11), text_color=MUTED,
-                                    anchor="w")
-        self.vpn_sub.grid(row=1, column=1, sticky="nw", pady=(0, 14))
-
-        self._section(p, "Серверы · локация")
-        c = self._card_row(p, "📍", "Выбранный сервер", "Локация для подключения")
-        box = ctk.CTkFrame(c, fg_color="transparent")
-        box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
-        self.vpn_server_var = ctk.StringVar()
-        self.vpn_server_menu = ctk.CTkOptionMenu(
-            box, values=["— нет серверов —"], variable=self.vpn_server_var, width=280,
-            height=36, font=(FONT, 13), corner_radius=8, fg_color=FIELD_BG,
-            text_color=TEXT, dropdown_fg_color=CARD_BG, dropdown_text_color=TEXT,
-            button_color=ACCENT, button_hover_color=ACCENT_HOVER,
-            command=self._on_vpn_server_pick)
-        self.vpn_server_menu.pack(side="left", padx=4)
-        self._btn(box, "Удалить", self.on_vpn_server_delete, width=100).pack(
-            side="left", padx=4)
-
-        self._section(p, "Добавить сервер")
-        c = self._card(p)
-        self.vpn_link = ctk.CTkTextbox(c, height=64, font=(FONT_MONO, 12),
-                                       fg_color=LOG_BG, text_color=LOG_FG,
-                                       border_width=0, wrap="char")
-        self.vpn_link.pack(fill="x", padx=12, pady=(12, 6))
-        self._enable_clipboard(self.vpn_link)
-        addbox = ctk.CTkFrame(c, fg_color="transparent")
-        addbox.pack(fill="x", padx=12, pady=(0, 10))
-        self._btn(addbox, "➕  Добавить", self.on_vpn_add_server, accent=True,
-                  width=140).pack(side="left", padx=2)
-        ctk.CTkLabel(addbox, text="ссылки vless/vmess/trojan/ss (по одной в строке) "
-                     "или ссылку на подписку (URL / base64)", font=(FONT, 11),
-                     text_color=MUTED, anchor="w", justify="left",
-                     wraplength=560).pack(side="left", padx=12)
-
-        self._refresh_vpn_servers()
-
-        self._section(p, "Режим и запуск")
-        c = self._card(p)
-        box = ctk.CTkFrame(c, fg_color="transparent")
-        box.grid(row=0, column=0, columnspan=3, padx=12, pady=(12, 4), sticky="w")
-        self.vpn_mode = ctk.StringVar(value=self.cfg.get("vpn_mode", "Прокси"))
-        ctk.CTkSegmentedButton(box, values=["Прокси", "Туннель"],
-                               variable=self.vpn_mode, font=(FONT, 12), text_color=TEXT,
-                               selected_color=SEG_SEL, selected_hover_color=SEG_SEL_HOVER,
-                               fg_color=FIELD_BG, unselected_color=FIELD_BG,
-                               unselected_hover_color=BTN_HOVER).pack(side="left", padx=4)
-        self.vpn_sysproxy = ctk.CTkCheckBox(box, text="Системный прокси (для режима «Прокси»)",
-                                            font=(FONT, 12), fg_color=ACCENT,
-                                            hover_color=ACCENT_HOVER)
-        self.vpn_sysproxy.pack(side="left", padx=16)
-        if self.cfg.get("vpn_sysproxy"):
-            self.vpn_sysproxy.select()
-        box2 = ctk.CTkFrame(c, fg_color="transparent")
-        box2.grid(row=1, column=0, columnspan=3, padx=12, pady=(0, 12), sticky="w")
-        self._btn(box2, "🌐  Подключить", self.on_vpn_connect, accent=True,
-                  width=170).pack(side="left", padx=4)
-        self._btn(box2, "■  Отключить", self.on_vpn_disconnect, width=150).pack(
-            side="left", padx=4)
-
-        self._refresh_vpn_status()
-        return p
-
-    def _vpn_servers(self):
-        return self.cfg.get("vpn_servers", []) or []
-
-    def _vpn_active_server(self):
-        name = self.vpn_server_var.get()
-        for s in self._vpn_servers():
-            if s["name"] == name:
-                return s
-        return None
-
-    def _refresh_vpn_servers(self):
-        servers = self._vpn_servers()
-        names = [s["name"] for s in servers] or ["— нет серверов —"]
-        self.vpn_server_menu.configure(values=names)
-        active = self.cfg.get("vpn_active")
-        self.vpn_server_var.set(active if active in names else names[0])
-
-    def _on_vpn_server_pick(self, value):
-        self.cfg["vpn_active"] = value
-        zc.save_config(self.cfg)
-
-    def on_vpn_add_server(self):
-        text = self.vpn_link.get("1.0", "end").strip()
-        if not text:
-            messagebox.showwarning("VPN", "Вставьте ссылку(и) или ссылку на подписку.")
-            return
-
-        def _key(s):                       # серверы бывают {link} и {outbound}
-            return s.get("link") or s.get("name", "")
-
-        def worker():
-            try:
-                found = vpnmod.import_servers(text)
-            except Exception as e:
-                self.log_msg(f"[VPN] ошибка разбора: {e}")
-                return
-            if not found:
-                self.log_msg("[VPN] не найдено серверов. Проверьте ссылку/подписку "
-                             "(vless/vmess/trojan/ss).")
-                return
-            servers = self._vpn_servers()
-            have = {_key(s) for s in servers}
-            added = [s for s in found if _key(s) not in have]
-            servers.extend(added)
-            self.cfg["vpn_servers"] = servers
-            self.cfg["vpn_active"] = (added or found)[-1]["name"]
-            zc.save_config(self.cfg)
-            self.log_msg(f"[VPN] добавлено серверов: {len(added)} (всего {len(servers)}).")
-            is_url = text.startswith(("http://", "https://")) and "\n" not in text
-            if is_url and len(found) <= 1:
-                self.log_msg("[VPN] подписка вернула 1 сервер — провайдер, видимо, "
-                             "отдаёт полный список локаций только своему приложению. "
-                             "Экспортируйте ссылки серверов из него и вставьте сюда "
-                             "(по одной в строке).")
-
-            def done():
-                self.vpn_link.delete("1.0", "end")
-                self._refresh_vpn_servers()
-            self.post(done)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def on_vpn_server_delete(self):
-        name = self.vpn_server_var.get()
-        servers = [s for s in self._vpn_servers() if s["name"] != name]
-        self.cfg["vpn_servers"] = servers
-        self.cfg.pop("vpn_active", None)
-        zc.save_config(self.cfg)
-        self._refresh_vpn_servers()
-        self.log_msg(f"[VPN] сервер «{name}» удалён.")
-
-    def on_vpn_connect(self):
-        server = self._vpn_active_server()
-        if not server:
-            messagebox.showwarning("VPN", "Сначала добавьте сервер и выберите его "
-                                   "в списке локаций.")
-            return
-        mode = "tunnel" if self.vpn_mode.get() == "Туннель" else "proxy"
-        sysproxy = bool(self.vpn_sysproxy.get())
-        self.cfg.update({"vpn_mode": self.vpn_mode.get(), "vpn_sysproxy": sysproxy})
-        zc.save_config(self.cfg)
-        self.vpn_title.configure(text="Подключение… (возможна загрузка ядра)")
-        self.log_msg(f"[VPN] подключение в режиме «{self.vpn_mode.get()}»…")
-
-        def worker():
-            ok, msg = vpnmod.vpn_start(server, mode=mode, system_proxy=sysproxy)
-            self.log_msg("[VPN] " + msg)
-            self.post(self._refresh_vpn_status)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def on_vpn_disconnect(self):
-        self.log_msg("[VPN] отключение…")
-
-        def worker():
-            vpnmod.vpn_stop()
-            self.log_msg("[VPN] отключён.")
-            self.post(self._refresh_vpn_status)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _refresh_vpn_status(self):
-        if not hasattr(self, "vpn_dot"):
-            return
-        s = vpnmod.vpn_status()
-        if s["running"]:
-            self.vpn_dot.configure(text_color=GREEN)
-            self.vpn_title.configure(
-                text="VPN активен · " + ("туннель" if s["mode"] == "tunnel" else "прокси"))
-            self.vpn_sub.configure(
-                text=f"SOCKS 127.0.0.1:{s['socks']} · HTTP :{s['http']}")
-        else:
-            self.vpn_dot.configure(text_color=MUTED)
-            self.vpn_title.configure(text="VPN выключен")
-            self.vpn_sub.configure(text="")
-
     # -- страница: Диагностика -------------------------------------------- #
     def _build_diag_page(self):
         p = self._page()
@@ -1288,12 +1060,10 @@ class ZapretApp(ctk.CTk):
         bar.grid_columnconfigure(0, weight=1)
         self.log_filter_var = ctk.StringVar()
         self.log_filter_var.trace_add("write", lambda *a: self._render_log())
-        _flt = ctk.CTkEntry(bar, textvariable=self.log_filter_var, height=34,
-                            font=(FONT, 12), placeholder_text="Фильтр по тексту…",
-                            fg_color=FIELD_BG, text_color=TEXT, border_color=BORDER,
-                            border_width=1)
-        _flt.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self._enable_clipboard(_flt)
+        ctk.CTkEntry(bar, textvariable=self.log_filter_var, height=34, font=(FONT, 12),
+                     placeholder_text="Фильтр по тексту…", fg_color=FIELD_BG,
+                     text_color=TEXT, border_color=BORDER, border_width=1).grid(
+            row=0, column=0, sticky="ew", padx=(0, 8))
         self.log_count_lbl = ctk.CTkLabel(bar, text="", font=(FONT, 11), text_color=MUTED)
         self.log_count_lbl.grid(row=0, column=1, padx=(0, 8))
         self._btn(bar, "Копировать", self.on_copy_log, width=120).grid(row=0, column=2, padx=4)
@@ -2613,10 +2383,6 @@ class ZapretApp(ctk.CTk):
             zc.tg_proxy_stop()
         except Exception:
             pass
-        try:
-            vpnmod.vpn_stop()   # снять системный прокси/маршруты, убить xray
-        except Exception:
-            pass
         if self.tray is not None:
             try:
                 self.tray.stop()
@@ -2635,10 +2401,6 @@ _SINGLETON = None
 
 def main():
     zc.install_crash_logging()   # необработанные исключения -> logs/crash.log
-    try:
-        vpnmod.cleanup_leftovers()   # снять наш системный прокси после прошлого краха
-    except Exception:
-        pass
     if not zc.is_admin():
         zc.relaunch_as_admin()
         return

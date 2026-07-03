@@ -24,7 +24,7 @@ jobs:
       - name: Install test deps
         run: pip install pytest ruff cryptography
       - name: Lint (реальные баги, не стиль)
-        run: ruff check --select=E9,F63,F7,F82 zapret_core.py zapret_app.pyw vpn.py tgproxy/ tests/
+        run: ruff check --select=E9,F63,F7,F82 zapret_core.py zapret_app.pyw tgproxy/ tests/
       - name: Unit tests
         run: pytest tests/ -q
 
@@ -63,6 +63,4 @@ jobs:
         with:
           name: Zapret GUI ${{ github.ref_name }}
           generate_release_notes: true
-          # тег с дефисом (vX.Y.Z-beta) -> pre-release: авто-апдейтер его не видит
-          prerelease: ${{ contains(github.ref_name, '-') }}
           files: ZapretControl.zip
