@@ -121,6 +121,10 @@ class ZapretApp(ctk.CTk):
             pass
 
         self.cfg = zc.load_config()
+        # новым пользователям — простой режим по умолчанию (мастер первого
+        # запуска предложит выбрать; опытные при обновлении остаются в полном)
+        if "ui_mode" not in self.cfg and not self.cfg.get("first_run_done"):
+            self.cfg["ui_mode"] = "simple"
         # оформление — задать режим (тёмная/светлая) и акцент до построения UI
         ctk.set_appearance_mode(self.cfg.get("appearance", "dark"))
         _apply_accent(self.cfg.get("accent_name", "Сигнальная"))
@@ -230,10 +234,13 @@ class ZapretApp(ctk.CTk):
         ctk.CTkLabel(ttl, text="by Enzowax", font=(FONT, 11),
                      text_color=ACCENT, anchor="w").pack(anchor="w")
 
-        for key, label in [("control", "🛡   Управление"), ("sites", "➕   Свои сайты"),
-                           ("auto", "🔍   Авто-поиск"), ("tgws", "✈   Telegram"),
-                           ("diag", "🩺   Диагностика"), ("settings", "⚙   Настройки"),
-                           ("log", "📜   Журнал")]:
+        simple = self._simple_mode()
+        nav = ([("control", "🏠   Главная")] if simple else
+               [("control", "🛡   Управление"), ("sites", "➕   Свои сайты"),
+                ("auto", "🔍   Авто-поиск"), ("tgws", "✈   Telegram"),
+                ("diag", "🩺   Диагностика"), ("settings", "⚙   Настройки"),
+                ("log", "📜   Журнал")])
+        for key, label in nav:
             row = ctk.CTkFrame(side, fg_color="transparent")
             row.pack(fill="x", padx=8, pady=2)
             # акцентная полоска-индикатор активного пункта (тема-независимая)
@@ -257,6 +264,11 @@ class ZapretApp(ctk.CTk):
         ctk.CTkLabel(side, text=f"v{zc.APP_VERSION} · {admin}", font=(FONT, 10),
                      text_color=MUTED, anchor="w").pack(side="bottom", fill="x",
                                                         padx=16, pady=(0, 2))
+        # переключатель режима интерфейса — всегда на виду
+        self.mode_seg = self._seg(side, ["Простой", "Полный"],
+                                  command=self._on_mode_change)
+        self.mode_seg.set("Простой" if simple else "Полный")
+        self.mode_seg.pack(side="bottom", fill="x", padx=12, pady=(6, 8))
 
         self.container = ctk.CTkFrame(self, fg_color=WIN_BG, corner_radius=0)
         self.container.grid(row=0, column=1, sticky="nsew")
@@ -264,15 +276,19 @@ class ZapretApp(ctk.CTk):
         self.container.grid_columnconfigure(0, weight=1)
 
         self._page_builders = {
-            "control": self._build_control_page, "sites": self._build_sites_page,
+            "control": (self._build_simple_page if simple
+                        else self._build_control_page),
+            "sites": self._build_sites_page,
             "auto": self._build_auto_page, "tgws": self._build_tgws_page,
             "diag": self._build_diag_page, "settings": self._build_settings_page,
             "log": self._build_log_page,
         }
         # Сразу строим только страницы, которые трогают фоновые обновления
         # (статус/прокси/журнал/настройки). Остальные — лениво при первом
-        # открытии: ускоряет запуск ~в 2-3 раза.
-        for key in ("control", "tgws", "settings", "log"):
+        # открытии: ускоряет запуск ~в 2-3 раза. В простом режиме скрытые
+        # страницы не строим вовсе — фоновые обновления защищены _cfgw.
+        for key in (("control", "log") if simple
+                    else ("control", "tgws", "settings", "log")):
             self.pages[key] = self._page_builders[key]()
 
     def _ensure_page(self, key):
@@ -384,15 +400,36 @@ class ZapretApp(ctk.CTk):
         """Запустить функцию в фоновом daemon-потоке (обёртка для читаемости)."""
         threading.Thread(target=fn, daemon=True).start()
 
-    # -- страница: Управление --------------------------------------------- #
-    def _build_control_page(self):
-        p = self._page()
-        self._title(p, "Управление Zapret",
-                    "Выберите пресет и запустите обход. Пресеты хранятся в "
-                    "presets.json. Тонкая настройка — в разделе «Настройки».")
+    def _cfgw(self, attr, **kw):
+        """Настроить виджет по имени атрибута, если он существует и жив.
+        Нужно, потому что в простом режиме часть страниц (и их виджетов)
+        не строится, а фоновые обновления статуса общие для обоих режимов."""
+        w = getattr(self, attr, None)
+        if w is None:
+            return
+        try:
+            w.configure(**kw)
+        except Exception:
+            pass
 
-        # --- плитка-дашборд: статус + здоровье + Старт/Стоп (сигнатура) ---
-        self._section(p, "Состояние")
+    # -- общие блоки страниц ------------------------------------------------ #
+    def _init_strategy_var(self):
+        """Создать strategy_var с последним выбранным пресетом (или general).
+        Нужен обоим режимам: в простом выпадайки нет, но запуск читает его."""
+        names = [pr["name"] for pr in self.presets]
+        self.strategy_var = ctk.StringVar()
+        last = self.cfg.get("strategy")
+        if last in names:
+            self.strategy_var.set(last)
+        elif "general" in names:
+            self.strategy_var.set("general")
+        elif names:
+            self.strategy_var.set(names[0])
+        return names
+
+    def _build_dashboard(self, p, big=False):
+        """Плитка-дашборд: статус + Старт/Стоп + здоровье сервисов.
+        big=True — крупные кнопки для простого режима."""
         card = ctk.CTkFrame(p, corner_radius=14, fg_color=CARD_BG,
                             border_width=1, border_color=BORDER)
         card.pack(fill="x", padx=14, pady=5)
@@ -403,9 +440,11 @@ class ZapretApp(ctk.CTk):
         top = ctk.CTkFrame(card, fg_color="transparent")
         top.pack(fill="x", padx=4, pady=(2, 0))
         top.grid_columnconfigure(1, weight=1)
-        self.ctl_dot = ctk.CTkLabel(top, text="●", font=(FONT, 30), text_color=MUTED)
+        self.ctl_dot = ctk.CTkLabel(top, text="●", font=(FONT, 34 if big else 30),
+                                    text_color=MUTED)
         self.ctl_dot.grid(row=0, column=0, rowspan=2, padx=(20, 14), pady=16)
-        self.ctl_status_title = ctk.CTkLabel(top, text="Проверка…", font=(FONT_DISPLAY, 20),
+        self.ctl_status_title = ctk.CTkLabel(top, text="Проверка…",
+                                             font=(FONT_DISPLAY, 22 if big else 20),
                                              text_color=TEXT, anchor="w")
         self.ctl_status_title.grid(row=0, column=1, sticky="sw", pady=(16, 0))
         self.ctl_status_sub = ctk.CTkLabel(top, text="", font=(FONT, 12),
@@ -413,10 +452,20 @@ class ZapretApp(ctk.CTk):
         self.ctl_status_sub.grid(row=1, column=1, sticky="nw", pady=(0, 16))
         btns = ctk.CTkFrame(top, fg_color="transparent")
         btns.grid(row=0, column=2, rowspan=2, padx=16, pady=12)
-        self.btn_start = self._btn(btns, "▶  Запустить", self.on_start,
-                                   accent=True, width=150)
+        if big:
+            self.btn_start = ctk.CTkButton(
+                btns, text="▶  Запустить", command=self.on_start, width=180,
+                height=46, corner_radius=10, font=(FONT_DISPLAY, 15),
+                fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color=ON_ACCENT)
+            self.btn_stop = ctk.CTkButton(
+                btns, text="■  Остановить", command=self.on_stop, width=150,
+                height=46, corner_radius=10, font=(FONT, 14),
+                fg_color=CARD_HOVER, hover_color=BTN_HOVER, text_color=TEXT)
+        else:
+            self.btn_start = self._btn(btns, "▶  Запустить", self.on_start,
+                                       accent=True, width=150)
+            self.btn_stop = self._btn(btns, "■  Остановить", self.on_stop, width=150)
         self.btn_start.pack(side="left", padx=4)
-        self.btn_stop = self._btn(btns, "■  Остановить", self.on_stop, width=150)
         self.btn_stop.pack(side="left", padx=4)
 
         ctk.CTkFrame(card, height=1, fg_color=BORDER).pack(
@@ -446,19 +495,160 @@ class ZapretApp(ctk.CTk):
         self._btn(hb, "Проверить", self.on_health_check, width=110).pack(
             side="right", padx=2)
 
+    # -- страница: Главная (простой режим) --------------------------------- #
+    def _build_simple_page(self):
+        p = self._page()
+        self._title(p, "Zapret — обход блокировок",
+                    "Всё нужное — на одном экране. Нажмите «Запустить», и Discord, "
+                    "YouTube и другие сайты заработают. Тонкие настройки — в полном "
+                    "режиме (переключатель внизу слева).")
+        self._init_strategy_var()
+
+        self._section(p, "Состояние")
+        self._build_dashboard(p, big=True)
+
+        self._section(p, "Telegram")
+        c = self._card_row(p, "✈", "Прокси для Telegram",
+                           "Если Telegram не грузит фото и видео — включите прокси: "
+                           "кнопка сама добавит его в Telegram, останется подтвердить")
+        box = ctk.CTkFrame(c, fg_color="transparent")
+        box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
+        self._btn(box, "Включить в Telegram", self.on_tg_open, accent=True,
+                  width=190).pack(side="left", padx=4)
+        self._btn(box, "Скопировать ссылку", self.on_tg_copy, width=170).pack(
+            side="left", padx=4)
+
+        self._section(p, "Если что-то не работает")
+        c = self._card_row(p, "🪄", "Подобрать настройку автоматически",
+                           "Программа проверит стратегии обхода, выберет рабочую "
+                           "и сразу включит её (займёт пару минут)")
+        box = ctk.CTkFrame(c, fg_color="transparent")
+        box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
+        self.simple_fix_lbl = ctk.CTkLabel(box, text="", font=(FONT, 11),
+                                           text_color=MUTED)
+        self.simple_fix_lbl.pack(side="left", padx=(0, 10))
+        self.simple_fix_btn = self._btn(box, "Подобрать и включить",
+                                        self.on_simple_fix, accent=True, width=190)
+        self.simple_fix_btn.pack(side="left", padx=4)
+
+        c = self._card_row(p, "📦", "Отчёт для поддержки",
+                           "Соберёт логи и диагностику в один файл — приложите его "
+                           "к вопросу, если нужна помощь")
+        self._btn(c, "Сохранить отчёт", self.on_support_bundle, width=160).grid(
+            row=0, column=2, rowspan=2, padx=14, pady=12)
+
+        self._section(p, "Автозапуск")
+        c = self._card_row(p, "🚀", "Запускаться вместе с Windows",
+                           "Приложение, обход и Telegram-прокси включатся сами "
+                           "при входе в систему")
+        self.full_autostart_switch = self._switch(c, self._on_full_autostart_toggle)
+        self.full_autostart_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20),
+                                        pady=12, sticky="e")
+        self._sync_autostart_switch()
+        return p
+
+    def on_simple_fix(self):
+        """«Подобрать и включить» простого режима: авто-поиск с автоприменением
+        лучшей стратегии; страница поиска при этом остаётся скрытой."""
+        if self.auto_running:
+            return
+        self._auto_autoapply = True
+        self._ensure_page("auto")
+        self._cfgw("simple_fix_btn", state="disabled")
+        self._cfgw("simple_fix_lbl", text="подбираю…")
+        self.on_auto_start()
+        if not self.auto_running:        # поиск не стартовал (нет пресетов и т.п.)
+            self._cfgw("simple_fix_btn", state="normal")
+            self._cfgw("simple_fix_lbl", text="")
+
+    # -- режим интерфейса: простой / полный --------------------------------- #
+    def _simple_mode(self):
+        return self.cfg.get("ui_mode", "advanced") == "simple"
+
+    def _on_mode_change(self, value):
+        self._set_ui_mode("simple" if value == "Простой" else "advanced")
+
+    def _set_ui_mode(self, mode, first_run=False):
+        if not first_run and self.cfg.get("ui_mode", "advanced") == mode:
+            return
+        self.cfg["ui_mode"] = mode
+        zc.save_config(self.cfg)
+        self._current_page = "control"
+        self._rebuild_ui()
+        self.log_msg("Режим интерфейса: "
+                     + ("простой" if mode == "simple" else "полный"))
+        if not first_run:
+            return
+        # первичная настройка после выбора режима в мастере
+        if mode == "simple":
+            if messagebox.askyesno(
+                    "Первичная настройка",
+                    "Настроить всё автоматически?\n\n"
+                    "Программа проверит стратегии обхода, выберет рабочую и "
+                    "сразу запустит её. Займёт пару минут."):
+                self.on_simple_fix()
+        elif messagebox.askyesno(
+                "Добро пожаловать в Zapret GUI",
+                "Запустить авто-поиск рабочих стратегий?\n\n"
+                "Программа подберёт оптимальную стратегию обхода и составит "
+                "список запасных. Если активная стратегия перестанет работать, "
+                "приложение само переключится на другую рабочую.\n\n"
+                "Поиск займёт пару минут."):
+            self._show_page("auto")
+            self.after(400, self.on_auto_start)
+
+    def _ask_mode_dialog(self):
+        win = ctk.CTkToplevel(self, fg_color=WIN_BG)
+        win.title("Добро пожаловать")
+        win.geometry("560x330")
+        win.resizable(False, False)
+        try:
+            win.transient(self)
+            win.grab_set()
+        except Exception:
+            pass
+        ctk.CTkLabel(win, text="Как вам удобнее?", font=(FONT_DISPLAY, 24),
+                     text_color=TEXT).pack(pady=(28, 4))
+        ctk.CTkLabel(win, text="Режим можно сменить в любой момент — "
+                     "переключатель внизу слева.",
+                     font=(FONT, 12), text_color=MUTED).pack(pady=(0, 16))
+
+        def pick(mode):
+            try:
+                win.destroy()
+            except Exception:
+                pass
+            self._set_ui_mode(mode, first_run=True)
+
+        for mode, txt, accent in (
+                ("simple", "🏠  Простой режим  ·  рекомендуется\n"
+                           "Одна кнопка «Запустить» — всё настроится само", True),
+                ("advanced", "🛠  Полный режим\n"
+                             "Пресеты, служба, DNS, диагностика, журнал", False)):
+            ctk.CTkButton(
+                win, text=txt, command=lambda m=mode: pick(m),
+                width=440, height=64, corner_radius=12, font=(FONT, 14),
+                fg_color=ACCENT if accent else CARD_HOVER,
+                hover_color=ACCENT_HOVER if accent else BTN_HOVER,
+                text_color=ON_ACCENT if accent else TEXT).pack(pady=7)
+        win.protocol("WM_DELETE_WINDOW", lambda: pick("simple"))
+
+    # -- страница: Управление --------------------------------------------- #
+    def _build_control_page(self):
+        p = self._page()
+        self._title(p, "Управление Zapret",
+                    "Выберите пресет и запустите обход. Пресеты хранятся в "
+                    "presets.json. Тонкая настройка — в разделе «Настройки».")
+
+        # --- плитка-дашборд: статус + здоровье + Старт/Стоп (сигнатура) ---
+        self._section(p, "Состояние")
+        self._build_dashboard(p)
+
         self._section(p, "Пресет обхода блокировок")
         c = self._card_row(p, "⭐", "Текущий пресет", "Выберите стратегию обхода")
         box = ctk.CTkFrame(c, fg_color="transparent")
         box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
-        names = [p["name"] for p in self.presets]
-        self.strategy_var = ctk.StringVar()
-        last = self.cfg.get("strategy")
-        if last in names:
-            self.strategy_var.set(last)
-        elif "general" in names:
-            self.strategy_var.set("general")
-        elif names:
-            self.strategy_var.set(names[0])
+        names = self._init_strategy_var()
         self.strategy_menu = self._menu(box, names or ["—"], self.strategy_var,
                                         self._on_strategy_pick, width=290)
         self.strategy_menu.pack(side="left", padx=4)
@@ -1003,12 +1193,7 @@ class ZapretApp(ctk.CTk):
         self.full_autostart_switch = self._switch(c, self._on_full_autostart_toggle)
         self.full_autostart_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20),
                                         pady=12, sticky="e")
-        # проверка автозапуска медленная (PowerShell ~0.5с) — не блокируем старт
-        def _chk_autostart():
-            on = zc.autostart_enabled()
-            self.post(lambda: self.full_autostart_switch.select() if on
-                      else self.full_autostart_switch.deselect())
-        self._bg(_chk_autostart)
+        self._sync_autostart_switch()
 
         self._section(p, "Списки и обход")
         c = self._card_row(p, "📃", "Автообновление списков и IPSet",
@@ -1204,31 +1389,24 @@ class ZapretApp(ctk.CTk):
         if installed:
             sub += f"   ·   служба: {'работает' if svc_run else 'установлена'}"
         self.ctl_status_sub.configure(text=sub)
-        self.ipset_label.configure(text=f"IPSet: {ipset}")
-        try:
-            if installed:
-                self.svc_label.configure(
-                    text="работает" if svc_run else "остановлена",
-                    text_color=GREEN if svc_run else MUTED)
-            else:
-                self.svc_label.configure(text="не установлена", text_color=MUTED)
-        except Exception:
-            pass
+        self._cfgw("ipset_label", text=f"IPSet: {ipset}")
+        if installed:
+            self._cfgw("svc_label", text="работает" if svc_run else "остановлена",
+                       text_color=GREEN if svc_run else MUTED)
+        else:
+            self._cfgw("svc_label", text="не установлена", text_color=MUTED)
 
         if tg:
-            self.tg_dot.configure(text_color=GREEN)
-            self.tg_title.configure(text="Telegram-прокси работает")
-            self.tg_sub.configure(text=f"Слушает {zc.TG_DEFAULT_HOST}:{zc.tg_get_port()}")
+            self._cfgw("tg_dot", text_color=GREEN)
+            self._cfgw("tg_title", text="Telegram-прокси работает")
+            self._cfgw("tg_sub", text=f"Слушает {zc.TG_DEFAULT_HOST}:{zc.tg_get_port()}")
         else:
-            self.tg_dot.configure(text_color=RED)
-            self.tg_title.configure(text="Telegram-прокси остановлен")
-            self.tg_sub.configure(text="Прокси не запущен")
+            self._cfgw("tg_dot", text_color=RED)
+            self._cfgw("tg_title", text="Telegram-прокси остановлен")
+            self._cfgw("tg_sub", text="Прокси не запущен")
         # индикатор прокси на дашборде
-        try:
-            self.dash_proxy_dot.configure(text_color=GREEN if tg else MUTED)
-            self.dash_proxy_lbl.configure(text="Telegram: вкл" if tg else "Telegram: выкл")
-        except Exception:
-            pass
+        self._cfgw("dash_proxy_dot", text_color=GREEN if tg else MUTED)
+        self._cfgw("dash_proxy_lbl", text="Telegram: вкл" if tg else "Telegram: выкл")
 
         if self.tray is not None:
             try:
@@ -1418,15 +1596,7 @@ class ZapretApp(ctk.CTk):
             return
         self.cfg["first_run_done"] = True
         zc.save_config(self.cfg)
-        if messagebox.askyesno(
-                "Добро пожаловать в Zapret GUI",
-                "Запустить авто-поиск рабочих стратегий?\n\n"
-                "Программа подберёт оптимальную стратегию обхода и составит "
-                "список запасных. Если активная стратегия перестанет работать, "
-                "приложение само переключится на другую рабочую.\n\n"
-                "Поиск займёт пару минут."):
-            self._show_page("auto")
-            self.after(400, self.on_auto_start)
+        self._ask_mode_dialog()
 
     # -- авто-восстановление (watchdog) ----------------------------------- #
     def _startup_service_restore(self):
@@ -1667,6 +1837,14 @@ class ZapretApp(ctk.CTk):
         self.pages = {}
         self.nav_buttons = {}
         self.nav_badges = {}
+        # убрать ссылки на виджеты разрушенных страниц: наборы страниц в простом
+        # и полном режиме разные, и _cfgw не должен попадать в «мёртвые» виджеты
+        for attr in ("ipset_label", "svc_label", "lists_label", "tg_dot",
+                     "tg_title", "tg_sub", "dash_proxy_dot", "dash_proxy_lbl",
+                     "pstat_conn", "pstat_traffic", "upd_label",
+                     "simple_fix_btn", "simple_fix_lbl"):
+            if hasattr(self, attr):
+                delattr(self, attr)
         self._diag_loaded = False        # пересобранная диагностика авто-обновится
         self._init_ttk_style()
         self._build_layout()
@@ -1716,6 +1894,22 @@ class ZapretApp(ctk.CTk):
             self.log_msg(f"[ОШИБКА] импорт: {e}")
 
     # -- трей ------------------------------------------------------------- #
+    def _sync_autostart_switch(self):
+        """Подтянуть реальное состояние задачи автозапуска в тумблер
+        (PowerShell ~0.5с — в фоне, не блокируя интерфейс)."""
+        def worker():
+            on = zc.autostart_enabled()
+
+            def apply():
+                try:
+                    (self.full_autostart_switch.select() if on
+                     else self.full_autostart_switch.deselect())
+                except Exception:
+                    pass
+            self.post(apply)
+
+        self._bg(worker)
+
     def _on_full_autostart_toggle(self):
         on = bool(self.full_autostart_switch.get())
         self.log_msg("Настройка полного автозапуска…")
@@ -1942,17 +2136,20 @@ class ZapretApp(ctk.CTk):
                 if info.get("error"):
                     return
                 if info.get("available"):
-                    self.upd_label.configure(text=f"есть {info['latest']}")
+                    self._cfgw("upd_label", text=f"есть {info['latest']}")
                     self.log_msg(f"[Обновление] доступна версия {info['latest']} — "
-                                 "раздел «Управление» → «Проверить».")
+                                 "раздел «Настройки» → «Проверить».")
+                    if self._simple_mode():
+                        # в простом режиме страницы настроек нет — предложить сразу
+                        self._show_update_result(info)
                 else:
-                    self.upd_label.configure(text=f"актуально ({info.get('current','')})")
+                    self._cfgw("upd_label", text=f"актуально ({info.get('current','')})")
             self.post(show)
 
         self._bg(worker)
 
     def on_check_update(self):
-        self.upd_label.configure(text="проверка…")
+        self._cfgw("upd_label", text="проверка…")
         self.log_msg("Проверка обновлений приложения…")
 
         def worker():
@@ -1963,14 +2160,14 @@ class ZapretApp(ctk.CTk):
 
     def _show_update_result(self, info):
         if info.get("error"):
-            self.upd_label.configure(text="ошибка")
+            self._cfgw("upd_label", text="ошибка")
             self.log_msg(f"[Обновление] ошибка: {info['error']}")
             return
         if not info.get("available"):
-            self.upd_label.configure(text=f"актуально ({info['current']})")
+            self._cfgw("upd_label", text=f"актуально ({info['current']})")
             self.log_msg(f"[Обновление] установлена последняя версия: {info['current']}")
             return
-        self.upd_label.configure(text=f"есть {info['latest']}")
+        self._cfgw("upd_label", text=f"есть {info['latest']}")
         notes = (info.get("notes") or "").strip()
         msg = f"Доступна версия {info['latest']} (у вас {info['current']}).\n\n"
         if notes:
@@ -1987,7 +2184,7 @@ class ZapretApp(ctk.CTk):
 
     def _do_update(self, url, size=0):
         self.log_msg("Скачивание обновления…")
-        self.upd_label.configure(text="скачивание…")
+        self._cfgw("upd_label", text="скачивание…")
 
         def worker():
             dest = os.path.join(os.environ.get("TEMP", zc.BASE), "ZapretControl_update.zip")
@@ -2006,7 +2203,7 @@ class ZapretApp(ctk.CTk):
                 self.post(self._quit_for_update)
             except Exception as e:
                 self.log_msg(f"[ОШИБКА] обновление: {e}")
-                self.post(lambda: self.upd_label.configure(text="ошибка"))
+                self.post(lambda: self._cfgw("upd_label", text="ошибка"))
 
         self._bg(worker)
 
@@ -2352,6 +2549,7 @@ class ZapretApp(ctk.CTk):
     def _auto_prog(self, frac, text):
         self.auto_bar.set(max(0.0, min(1.0, frac)))
         self.auto_phase_lbl.configure(text=text)
+        self._cfgw("simple_fix_lbl", text=text)   # зеркало на простой странице
 
     def _auto_add_row(self, name, per, total, avg_lat, counts):
         def cell(s):
@@ -2381,6 +2579,10 @@ class ZapretApp(ctk.CTk):
         self.btn_stop.configure(state="normal")
         self.auto_bar.set(1.0)
         self.auto_phase_lbl.configure(text="готово")
+        self._cfgw("simple_fix_btn", state="normal")
+        self._cfgw("simple_fix_lbl",
+                   text=(f"готово: {self.auto_best[0]}" if self.auto_best
+                         else "рабочая стратегия не нашлась"))
         # пул запасных рабочих стратегий (для авто-восстановления), лучшие первыми
         pool = [n for n, _ in sorted(self._auto_full_pass, key=lambda x: x[1])]
         self.cfg["recovery_pool"] = pool
