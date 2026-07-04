@@ -1,6 +1,7 @@
 """Юнит-тесты чистых функций ядра (без сети/сабпроцессов).
 Гоняются в CI до сборки — гейт, чтобы не выпустить сломанный билд."""
 import os
+import ssl
 import sys
 import tempfile
 
@@ -43,6 +44,16 @@ def test_prioritize_presets_order():
     assert order[0] == "last"            # последний рабочий — первым
     assert order[1:3] == ["poolA", "poolB"]   # затем пул в его порядке
     assert len(order) == len(presets)    # ничего не потеряли
+
+
+# --- проверка соединения авто-поиска верифицирует сертификат -------------- #
+def test_verify_tls_context_checks_cert_and_hostname():
+    # Гарантия против регресса: если проверку сертификата/имени хоста отключат
+    # (CERT_NONE), авто-поиск снова начнёт считать заглушку цензора «рабочей»
+    # стратегией и рекомендовать её как лучшую (баг general (ALT)).
+    ctx = zc._verify_tls_context()
+    assert ctx.check_hostname is True
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
 
 
 # --- version compare ----------------------------------------------------- #

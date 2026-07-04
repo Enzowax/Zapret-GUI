@@ -99,7 +99,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.37.0"
+APP_VERSION = "2.38.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -1130,10 +1130,21 @@ def apply_update(zip_path):
 # --------------------------------------------------------------------------- #
 #  Асинхронные проверки соединения (TLS-рукопожатие к хостам)
 # --------------------------------------------------------------------------- #
+def _verify_tls_context():
+    """SSL-контекст с ОБЯЗАТЕЛЬНОЙ проверкой сертификата и имени хоста.
+
+    Критично для честности авто-поиска: если проверку отключить (CERT_NONE),
+    то соединение, которое DPI-цензор заворачивает на свою локальную заглушку,
+    всё равно «успешно» завершает рукопожатие — и стратегия ложно считается
+    рабочей. Хуже того, заглушка отвечает с минимальной задержкой, поэтому
+    такая «стратегия» ещё и занимает первое место как «лучшая» (наблюдалось
+    на general (ALT)). С проверкой сертификата заглушка не пройдёт: валидный
+    сертификат для discord.com есть только у настоящего сервера Telegram."""
+    return ssl.create_default_context()
+
+
 async def _check_host(host, timeout, attempts):
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    ctx = _verify_tls_context()
     for _ in range(attempts):
         t0 = time.perf_counter()
         writer = None
