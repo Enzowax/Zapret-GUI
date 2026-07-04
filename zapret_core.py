@@ -99,7 +99,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.39.0"
+APP_VERSION = "2.39.1"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -1710,19 +1710,57 @@ def autostart_enabled():
         return False
 
 
+def autostart_action_exe():
+    """Путь к exe, который запускает задача автозапуска ('' если задачи нет)."""
+    try:
+        out = _ps(
+            f"$t=Get-ScheduledTask -TaskName '{AUTOSTART_TASK}' "
+            "-ErrorAction SilentlyContinue; if($t){$t.Actions[0].Execute}").stdout.strip()
+        return out.strip().strip('"')
+    except Exception:
+        return ""
+
+
+def _same_path(a, b):
+    try:
+        return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+    except Exception:
+        return False
+
+
+def autostart_healthy():
+    """Задача автозапуска существует И указывает на текущий exe.
+    В режиме разработки (не .exe) достаточно самого факта наличия задачи."""
+    if not autostart_enabled():
+        return False
+    if not getattr(sys, "frozen", False):
+        return True
+    cur = autostart_action_exe()
+    return bool(cur) and _same_path(cur, sys.executable)
+
+
 def enable_autostart():
-    """Создать задачу: запуск приложения при входе в систему с правами админа
-    (без UAC-окна). Приложение получает аргумент --autostart. -> (ok, msg)."""
+    """Создать/обновить задачу: запуск приложения при входе в систему с правами
+    админа (без UAC-окна). Приложение получает аргумент --autostart. -> (ok, msg).
+
+    Особенности для надёжности:
+    - путь всегда текущий (sys.executable) — при обновлении/переносе не устаревает;
+    - задержка входа 10 c и StartWhenAvailable — чтобы не гоняться с готовностью
+      оболочки/сети при логоне (иначе автозапуск иногда «не срабатывает»);
+    - -Force перезаписывает старую (возможно сломанную) задачу целиком."""
     if not getattr(sys, "frozen", False):
         return False, "автозапуск доступен только в собранном .exe"
     exe = sys.executable.replace("'", "''")
+    workdir = os.path.dirname(sys.executable).replace("'", "''")
     script = (
-        f"$a=New-ScheduledTaskAction -Execute '{exe}' -Argument '--autostart';"
-        "$t=New-ScheduledTaskTrigger -AtLogOn;"
+        f"$a=New-ScheduledTaskAction -Execute '{exe}' -Argument '--autostart' "
+        f"-WorkingDirectory '{workdir}';"
+        "$t=New-ScheduledTaskTrigger -AtLogOn; $t.Delay='PT10S';"
         "$p=New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive "
         "-RunLevel Highest;"
         "$s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "
-        "-DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero);"
+        "-DontStopIfGoingOnBatteries -StartWhenAvailable "
+        "-ExecutionTimeLimit ([TimeSpan]::Zero);"
         f"try{{Register-ScheduledTask -TaskName '{AUTOSTART_TASK}' -Action $a "
         "-Trigger $t -Principal $p -Settings $s -Force -ErrorAction Stop | Out-Null;'OK'}"
         "catch{'FAIL:'+$_.Exception.Message}"
@@ -1732,6 +1770,22 @@ def enable_autostart():
     if "OK" in out:
         return True, "задача автозапуска создана"
     return False, out.replace("FAIL:", "") or (res.stderr or "не удалось").strip()
+
+
+def repair_autostart():
+    """Если задача автозапуска есть, но указывает не на текущий exe (после
+    переноса папки или обновления) — перерегистрировать с актуальным путём.
+    Именно из-за устаревшего пути автозапуск «включён, но не срабатывает».
+    -> True, если задача была починена."""
+    try:
+        if not getattr(sys, "frozen", False):
+            return False
+        if not autostart_enabled() or autostart_healthy():
+            return False
+        ok, _msg = enable_autostart()
+        return ok
+    except Exception:
+        return False
 
 
 def disable_autostart():

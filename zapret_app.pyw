@@ -176,6 +176,7 @@ class ZapretApp(ctk.CTk):
         self.after(4000, self._startup_lists_check)
         self.after(6000, self._startup_diag_badge)
         self.after(900, self._startup_service_restore)
+        self.after(2200, self._repair_autostart_bg)
         self._bg(self._watchdog_loop)
         if self.autostart_launch:
             # запуск при входе в систему: поднять обход и прокси, свернуться в трей
@@ -235,7 +236,8 @@ class ZapretApp(ctk.CTk):
                      text_color=ACCENT, anchor="w").pack(anchor="w")
 
         simple = self._simple_mode()
-        nav = ([("control", "🏠   Главная")] if simple else
+        nav = ([("control", "🏠   Главная"), ("sites", "➕   Свои сайты"),
+                ("settings", "⚙   Настройки"), ("log", "📜   Журнал")] if simple else
                [("control", "🛡   Управление"), ("sites", "➕   Свои сайты"),
                 ("auto", "🔍   Авто-поиск"), ("tgws", "✈   Telegram"),
                 ("diag", "🩺   Диагностика"), ("settings", "⚙   Настройки"),
@@ -280,7 +282,9 @@ class ZapretApp(ctk.CTk):
                         else self._build_control_page),
             "sites": self._build_sites_page,
             "auto": self._build_auto_page, "tgws": self._build_tgws_page,
-            "diag": self._build_diag_page, "settings": self._build_settings_page,
+            "diag": self._build_diag_page,
+            "settings": (self._build_simple_settings_page if simple
+                         else self._build_settings_page),
             "log": self._build_log_page,
         }
         # Сразу строим только страницы, которые трогают фоновые обновления
@@ -575,10 +579,14 @@ class ZapretApp(ctk.CTk):
                            "к вопросу, если нужна помощь")
         self._btn(c, "Сохранить отчёт", self.on_support_bundle, width=160).grid(
             row=0, column=2, rowspan=2, padx=14, pady=12)
+        return p
 
-        self._section(p, "Игры и свои сайты")
-        self._add_games_excl_card(p)
-        self._add_sites_editor(p, height=150)
+    # -- страница: Настройки (простой режим) ------------------------------- #
+    def _build_simple_settings_page(self):
+        p = self._page()
+        self._title(p, "Настройки",
+                    "Оформление, запуск с Windows и обновления. Больше параметров — "
+                    "в полном режиме (переключатель внизу слева).")
 
         self._section(p, "Оформление")
         c = self._card_row(p, "🌗", "Тема", "Тёмная / светлая / системная")
@@ -589,7 +597,14 @@ class ZapretApp(ctk.CTk):
                   variable=self.appearance_var).grid(
             row=0, column=2, rowspan=2, padx=14, pady=12)
 
-        self._section(p, "Автозапуск")
+        c = self._card_row(p, "🎨", "Акцентный цвет", "Цвет кнопок и выделения")
+        self.theme_var = ctk.StringVar(
+            value=self.cfg.get("accent_name") if self.cfg.get("accent_name") in THEMES
+            else "Сигнальная")
+        self._menu(c, list(THEMES.keys()), self.theme_var, self._on_theme_change).grid(
+            row=0, column=2, rowspan=2, padx=14, pady=12)
+
+        self._section(p, "Запуск с Windows")
         c = self._card_row(p, "🚀", "Запускаться вместе с Windows",
                            "Приложение, обход и Telegram-прокси включатся сами "
                            "при входе в систему")
@@ -597,6 +612,22 @@ class ZapretApp(ctk.CTk):
         self.full_autostart_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20),
                                         pady=12, sticky="e")
         self._sync_autostart_switch()
+
+        self._section(p, "Обновления")
+        c = self._card_row(p, "⬆", f"Версия {zc.APP_VERSION}",
+                           "Проверить и установить новую версию с GitHub")
+        box = ctk.CTkFrame(c, fg_color="transparent")
+        box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
+        self.upd_label = ctk.CTkLabel(box, text="", font=(FONT, 11), text_color=MUTED)
+        self.upd_label.pack(side="left", padx=(0, 8))
+        self._btn(box, "Проверить", self.on_check_update, accent=True,
+                  width=120).pack(side="left", padx=4)
+
+        self._section(p, "Антивирус")
+        c = self._card_row(p, "🛡", "Windows Defender",
+                           "Добавить папку в исключения — меньше ложных срабатываний AV")
+        self._btn(c, "Добавить в исключения", self.on_add_defender_exclusion,
+                  accent=True, width=200).grid(row=0, column=2, rowspan=2, padx=14, pady=12)
         return p
 
     def on_simple_fix(self):
@@ -1929,6 +1960,24 @@ class ZapretApp(ctk.CTk):
                 except Exception:
                     pass
             self.post(apply)
+
+        self._bg(worker)
+
+    def _repair_autostart_bg(self):
+        """Самопочинка задачи автозапуска: если она есть, но указывает на старый
+        путь (после обновления/переноса) — перерегистрировать под текущий exe.
+        Раньше это приходилось делать вручную (выкл/вкл тумблер)."""
+        if self._closing:
+            return
+
+        def worker():
+            try:
+                if zc.repair_autostart():
+                    self.log_msg("Автозапуск с Windows: задача обновлена под текущий "
+                                 "путь приложения (после обновления/переноса).")
+                    self.post(self._sync_autostart_switch)
+            except Exception:
+                pass
 
         self._bg(worker)
 
