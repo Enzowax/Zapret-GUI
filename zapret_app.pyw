@@ -495,6 +495,45 @@ class ZapretApp(ctk.CTk):
         self._btn(hb, "Проверить", self.on_health_check, width=110).pack(
             side="right", padx=2)
 
+    def _add_games_excl_card(self, parent):
+        """Карточка «Не трогать Steam / Dota 2» с тумблером (общая для полной
+        страницы «Свои сайты» и простого режима)."""
+        c = self._card_row(parent, "🎮", "Не трогать Steam / Dota 2",
+                           "Включите, если при обходе в Dota 2 не грузятся гайды/"
+                           "сборки/гильдия (контент Steam идёт через те же сети, "
+                           "что и обход). Касается и других игр Steam.")
+        self.games_excl_switch = self._switch(c, self._on_games_excl_toggle)
+        self.games_excl_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20),
+                                    pady=12, sticky="e")
+        if zc.game_exclusions_present():
+            self.games_excl_switch.select()
+
+    def _add_sites_editor(self, parent, height=300):
+        """Редактор своих доменов: поле + подсказка + кнопки + счётчик (общий
+        для полной страницы и простого режима)."""
+        c = self._card(parent)
+        self.sites_box = ctk.CTkTextbox(c, height=height, font=("Consolas", 13),
+                                        fg_color=LOG_BG, text_color=LOG_FG,
+                                        border_width=0, wrap="none")
+        self.sites_box.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+        ctk.CTkLabel(c, text="По одному сайту в строке (например, rutracker.org). "
+                     "Можно вставлять и ссылки целиком — лишнее уберётся, www. и "
+                     "дубли отбросятся.", font=(FONT, 11), text_color=MUTED,
+                     anchor="w", justify="left", wraplength=720).pack(
+            fill="x", padx=14, pady=(0, 8))
+
+        c = self._card(parent)
+        box = ctk.CTkFrame(c, fg_color="transparent")
+        box.grid(row=0, column=0, columnspan=3, padx=12, pady=12, sticky="w")
+        self._btn(box, "💾  Сохранить и применить", self.on_sites_save,
+                  accent=True, width=220).pack(side="left", padx=4)
+        self._btn(box, "Сбросить изменения", self._sites_load, width=170).pack(
+            side="left", padx=4)
+        self.sites_count = ctk.CTkLabel(box, text="", font=(FONT, 12),
+                                        text_color=MUTED)
+        self.sites_count.pack(side="left", padx=14)
+        self._sites_load()
+
     # -- страница: Главная (простой режим) --------------------------------- #
     def _build_simple_page(self):
         p = self._page()
@@ -535,6 +574,19 @@ class ZapretApp(ctk.CTk):
                            "Соберёт логи и диагностику в один файл — приложите его "
                            "к вопросу, если нужна помощь")
         self._btn(c, "Сохранить отчёт", self.on_support_bundle, width=160).grid(
+            row=0, column=2, rowspan=2, padx=14, pady=12)
+
+        self._section(p, "Игры и свои сайты")
+        self._add_games_excl_card(p)
+        self._add_sites_editor(p, height=150)
+
+        self._section(p, "Оформление")
+        c = self._card_row(p, "🌗", "Тема", "Тёмная / светлая / системная")
+        self.appearance_var = ctk.StringVar(
+            value={v: k for k, v in APPEARANCE.items()}.get(
+                self.cfg.get("appearance", "dark"), "Тёмная"))
+        self._seg(c, list(APPEARANCE.keys()), command=self._on_appearance_change,
+                  variable=self.appearance_var).grid(
             row=0, column=2, rowspan=2, padx=14, pady=12)
 
         self._section(p, "Автозапуск")
@@ -741,40 +793,10 @@ class ZapretApp(ctk.CTk):
                     "в строке — подпапки и поддомены учитываются автоматически.")
 
         self._section(p, "Список доменов")
-        c = self._card(p)
-        self.sites_box = ctk.CTkTextbox(c, height=300, font=("Consolas", 13),
-                                        fg_color=LOG_BG, text_color=LOG_FG,
-                                        border_width=0, wrap="none")
-        self.sites_box.pack(fill="both", expand=True, padx=12, pady=(12, 6))
-        hint = ("Можно вставлять и ссылки целиком (https://site.com/...) — лишнее "
-                "уберётся само. www. и дубли отбрасываются.")
-        ctk.CTkLabel(c, text=hint, font=(FONT, 11), text_color=MUTED,
-                     anchor="w", justify="left", wraplength=720).pack(
-            fill="x", padx=14, pady=(0, 8))
-
-        c = self._card(p)
-        box = ctk.CTkFrame(c, fg_color="transparent")
-        box.grid(row=0, column=0, columnspan=3, padx=12, pady=12, sticky="w")
-        self._btn(box, "💾  Сохранить и применить", self.on_sites_save,
-                  accent=True, width=220).pack(side="left", padx=4)
-        self._btn(box, "Сбросить изменения", self._sites_load, width=170).pack(
-            side="left", padx=4)
-        self.sites_count = ctk.CTkLabel(box, text="", font=(FONT, 12),
-                                        text_color=MUTED)
-        self.sites_count.pack(side="left", padx=14)
+        self._add_sites_editor(p, height=300)
 
         self._section(p, "Исключения из обхода")
-        c = self._card_row(p, "🎮", "Не трогать Steam / Dota 2",
-                           "Включите, если при обходе в Dota 2 не грузятся гайды/"
-                           "сборки/гильдия (контент Steam идёт через те же сети, что "
-                           "и обход). Обход перестанет десинкать трафик Steam/Valve.")
-        self.games_excl_switch = self._switch(c, self._on_games_excl_toggle)
-        self.games_excl_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20),
-                                    pady=12, sticky="e")
-        if zc.game_exclusions_present():
-            self.games_excl_switch.select()
-
-        self._sites_load()
+        self._add_games_excl_card(p)
         return p
 
     def _on_games_excl_toggle(self):
