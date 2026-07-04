@@ -404,6 +404,40 @@ class ZapretApp(ctk.CTk):
         """Запустить функцию в фоновом daemon-потоке (обёртка для читаемости)."""
         threading.Thread(target=fn, daemon=True).start()
 
+    # keycode -> виртуальное событие (позиции клавиш US QWERTY, от раскладки
+    # не зависят): 67=C, 86=V, 88=X. A(65) обрабатывается отдельно.
+    _CLIP_KEYS = {67: "<<Copy>>", 86: "<<Paste>>", 88: "<<Cut>>"}
+
+    def _clipboard_on_key(self, e):
+        """Обработчик Ctrl+C/V/X/A по keycode. На нелатинской раскладке (русской
+        и др.) Tk не ловит их по символу — физическая клавиша шлёт кириллицу,
+        а keycode остаётся тем же. -> 'break', если событие обработано."""
+        if not (e.state & 0x4):              # нужен Control
+            return None
+        w, kc = e.widget, e.keycode
+        ev = self._CLIP_KEYS.get(kc)
+        if ev:
+            w.event_generate(ev)
+            return "break"
+        if kc == 65:                         # A — выделить всё
+            try:
+                w.tag_add("sel", "1.0", "end")            # Text/Textbox
+            except Exception:
+                try:
+                    w.select_range(0, "end")              # Entry
+                except Exception:
+                    pass
+            return "break"
+        return None
+
+    def _enable_clipboard(self, widget):
+        """Включить копирование/вставку/вырезание/выделение по keycode для поля
+        ввода — чтобы работали и на русской (любой нелатинской) раскладке."""
+        try:
+            widget.bind("<Key>", self._clipboard_on_key)
+        except Exception:
+            pass
+
     def _cfgw(self, attr, **kw):
         """Настроить виджет по имени атрибута, если он существует и жив.
         Нужно, потому что в простом режиме часть страниц (и их виджетов)
@@ -520,6 +554,7 @@ class ZapretApp(ctk.CTk):
                                         fg_color=LOG_BG, text_color=LOG_FG,
                                         border_width=0, wrap="none")
         self.sites_box.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+        self._enable_clipboard(self.sites_box)
         ctk.CTkLabel(c, text="По одному сайту в строке (например, rutracker.org). "
                      "Можно вставлять и ссылки целиком — лишнее уберётся, www. и "
                      "дубли отбросятся.", font=(FONT, 11), text_color=MUTED,
@@ -990,9 +1025,11 @@ class ZapretApp(ctk.CTk):
         self._section(p, "Ссылка для Telegram")
         c = self._card(p)
         self.tg_link_var = ctk.StringVar(value=zc.tg_proxy_url())
-        ctk.CTkEntry(c, textvariable=self.tg_link_var, font=(FONT, 12), height=36,
-                     fg_color=FIELD_BG, text_color=TEXT, border_width=0).grid(
-            row=0, column=0, sticky="ew", padx=(12, 8), pady=12)
+        tg_link_entry = ctk.CTkEntry(c, textvariable=self.tg_link_var, font=(FONT, 12),
+                                     height=36, fg_color=FIELD_BG, text_color=TEXT,
+                                     border_width=0)
+        tg_link_entry.grid(row=0, column=0, sticky="ew", padx=(12, 8), pady=12)
+        self._enable_clipboard(tg_link_entry)
         c.grid_columnconfigure(0, weight=1)
         self._btn(c, "Скопировать", self.on_tg_copy, width=130).grid(
             row=0, column=1, padx=4, pady=12)
@@ -1012,10 +1049,12 @@ class ZapretApp(ctk.CTk):
         box = ctk.CTkFrame(c, fg_color="transparent")
         box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
         self.tg_port_var = ctk.StringVar(value=str(zc.tg_get_port()))
-        ctk.CTkEntry(box, textvariable=self.tg_port_var, width=80, height=36,
-                     font=(FONT, 13), justify="center", fg_color=FIELD_BG,
-                     text_color=TEXT, border_color=BORDER, border_width=1).pack(
-            side="left", padx=4)
+        tg_port_entry = ctk.CTkEntry(box, textvariable=self.tg_port_var, width=80,
+                                     height=36, font=(FONT, 13), justify="center",
+                                     fg_color=FIELD_BG, text_color=TEXT,
+                                     border_color=BORDER, border_width=1)
+        tg_port_entry.pack(side="left", padx=4)
+        self._enable_clipboard(tg_port_entry)
         self._btn(box, "Применить", self.on_tg_apply_port, width=110).pack(side="left", padx=4)
         self._btn(box, "Сменить секрет", self.on_tg_regen, width=150).pack(side="left", padx=4)
 
@@ -1287,10 +1326,12 @@ class ZapretApp(ctk.CTk):
         bar.grid_columnconfigure(0, weight=1)
         self.log_filter_var = ctk.StringVar()
         self.log_filter_var.trace_add("write", lambda *a: self._render_log())
-        ctk.CTkEntry(bar, textvariable=self.log_filter_var, height=34, font=(FONT, 12),
-                     placeholder_text="Фильтр по тексту…", fg_color=FIELD_BG,
-                     text_color=TEXT, border_color=BORDER, border_width=1).grid(
-            row=0, column=0, sticky="ew", padx=(0, 8))
+        log_filter_entry = ctk.CTkEntry(bar, textvariable=self.log_filter_var, height=34,
+                                        font=(FONT, 12), placeholder_text="Фильтр по тексту…",
+                                        fg_color=FIELD_BG, text_color=TEXT,
+                                        border_color=BORDER, border_width=1)
+        log_filter_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self._enable_clipboard(log_filter_entry)
         self.log_count_lbl = ctk.CTkLabel(bar, text="", font=(FONT, 11), text_color=MUTED)
         self.log_count_lbl.grid(row=0, column=1, padx=(0, 8))
         self._btn(bar, "Копировать", self.on_copy_log, width=120).grid(row=0, column=2, padx=4)
@@ -2545,7 +2586,7 @@ class ZapretApp(ctk.CTk):
                 lats = [res[h][1] for h in quick_hosts if res[h][0] and res[h][1]]
                 avg = sum(lats) / len(lats) if lats else None
                 phase1.append((name, score, avg))
-                self.log_msg(f"  отсев: {name} — {score}/{len(quick_hosts)}")
+                self.log_msg(f"  фаза 1 (быстрый отсев): {name} — {score}/{len(quick_hosts)}")
                 if score == len(quick_hosts):
                     full_found += 1
                     if fast and full_found >= EARLY_STOP:
@@ -2567,6 +2608,8 @@ class ZapretApp(ctk.CTk):
 
             # Фаза 2 — точная проверка
             if candidates:
+                self.log_msg("--- Фаза 2 (точная проверка кандидатов) — "
+                             "именно эти цифры показаны в таблице ---")
                 self.post(lambda c=len(candidates):
                           self.auto_phase_lbl.configure(text=f"Фаза 2: проверка {c} лучших"))
                 self.post(lambda: self.auto_bar.set(0))
@@ -2630,6 +2673,11 @@ class ZapretApp(ctk.CTk):
         self.tree.insert("", "end",
                          values=(name, cell("discord"), cell("youtube"), cell("google"),
                                  total_str, ms), tags=(tag,))
+        # дублируем в журнал точный результат фазы 2 — чтобы лог совпадал с
+        # таблицей (раньше в лог попадал только быстрый отсев фазы 1, и цифры
+        # выглядели противоречиво)
+        self.log_msg(f"  фаза 2 (точно): {name} — {total_str}"
+                     + (f" (~{ms} мс)" if avg_lat else ""))
         if total > 0:
             cur = (total, -(avg_lat if avg_lat else 1e9))
             best = (self.auto_best[1], -(self.auto_best[2] or 1e9)) if self.auto_best else None
