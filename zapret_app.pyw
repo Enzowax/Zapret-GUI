@@ -34,39 +34,45 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 # Палитра как пары (светлая, тёмная) — CustomTkinter сам выбирает по режиму.
-# Идентичность «Signal»: прохладный чернильный тёмный / выверенный холодный
-# светлый, с честной иерархией поверхностей и волосяной рамкой для чёткости.
-WIN_BG = ("#e6eaf1", "#0f1218")        # фон окна (приглушённый холодный, не бьёт яркостью)
-SIDEBAR_BG = ("#dadfea", "#0a0c11")    # сайдбар — глубже фона, отступает назад
-CARD_BG = ("#f7f9fc", "#171b23")       # карта — мягкий off-white (без чистой белизны)
-CARD_HOVER = ("#eef1f7", "#1f242e")
-BTN_HOVER = ("#dbe1ec", "#2a303c")     # ховер неакцентной кнопки
-BORDER = ("#ccd4e1", "#262c38")        # волосяная рамка — держит разделение вместо белизны
-SWITCH_OFF = ("#8b95aa", "#3a4150")    # дорожка выключ. тумблера (тёмная — белый бегунок виден)
+# Тёмная — прохладная чернильная (её не трогаем, она удачная). Светлая
+# переработана: ЯРКИЙ воздушный фон, белые приподнятые карты, а поля/списки/
+# журнал — заметно темнее (светло-серые), чтобы белые бегунки тумблеров и
+# контент не сливались с фоном.
+WIN_BG = ("#f4f7fc", "#0f1218")        # фон окна — светлый яркий / тёмный чернильный
+SIDEBAR_BG = ("#e7ecf5", "#0a0c11")    # сайдбар — чуть глубже фона, отступает назад
+CARD_BG = ("#ffffff", "#171b23")       # карта — чистый белый, приподнята над фоном
+CARD_HOVER = ("#eef2f9", "#1f242e")
+BTN_HOVER = ("#dde4ef", "#2a303c")     # ховер неакцентной кнопки — светло-серый
+BORDER = ("#d3dbe8", "#262c38")        # волосяная рамка — разделяет белое от белого
+SWITCH_OFF = ("#aab4c6", "#3a4150")    # дорожка выкл. тумблера — чёткий серый
 SWITCH_KNOB = ("#ffffff", "#eaeef4")   # бегунок тумблера
-SWITCH_BORDER = ("#727c91", "#4a5263") # обводка тумблера (чтобы не сливался)
-FIELD_BG = ("#e2e7f0", "#1f242e")      # фон выпадающих списков/полей
-LOG_BG = ("#f7f9fc", "#0c0f15")
-LOG_FG = ("#2a3240", "#cdd3dd")
+SWITCH_KNOB_HOVER = ("#e4e9f2", "#d4dae4")  # ховер бегунка — светло-серый, НЕ чёрный
+SWITCH_BORDER = ("#9aa4b7", "#4a5263") # обводка тумблера (чтобы не сливался)
+FIELD_BG = ("#e6ebf3", "#1f242e")      # поля/списки — светло-СЕРЫЕ, темнее карт и фона
+LOG_BG = ("#e9eef5", "#0c0f15")        # текстовые поля (журнал, свои сайты) — серые
+LOG_FG = ("#242c3a", "#cdd3dd")
 TEXT = ("#1b2330", "#eef1f6")
 MUTED = ("#5c6573", "#828b99")
 
 ON_ACCENT = "#ffffff"                  # текст/иконки поверх акцентной заливки
-ACCENT = "#0e7c75"
+ACCENT = "#0e7c75"                     # текущий акцент (для активного режима)
 ACCENT_HOVER = "#0b645e"
-# выбранный сегмент: светлый-бирюзовый (тёмный текст читается) / глубокий (светлый
-# текст). text_color=TEXT тогда чёткий и на выбранном, и на невыбранном сегменте.
-SEG_SEL = ("#9ad6cf", "#0e7c75")
-SEG_SEL_HOVER = ("#8accc4", "#0b645e")
+SEG_SEL = "#9ad6cf"                    # фон выбранного сегмента (для активного режима)
+SEG_SEL_HOVER = "#8accc4"
 
-# темы оформления (акцентный цвет, hover) — «Сигнальная» по умолчанию
+# Темы оформления: для КАЖДОЙ — свой акцент под светлую и под тёмную тему.
+# На ярком белом фоне нужны насыщеннее/темнее (чтобы белый текст читался и цвет
+# не выцветал), на тёмном — светлее/ярче. dark-варианты = прежние удачные.
+# dark-варианты = прежние (не трогаем — в тёмной теме они удачные),
+# light-варианты подобраны заново под яркий белый фон.
+#            (светлая: basic, hover)      (тёмная: basic, hover — как было)
 THEMES = {
-    "Сигнальная": ("#0e7c75", "#0b645e"),
-    "Синяя":      ("#2f6fe0", "#2560c6"),
-    "Индиго":     ("#5a5cf0", "#4a4cdb"),
-    "Зелёная":    ("#1f9e57", "#1a8849"),
-    "Янтарная":   ("#c98a14", "#b0780f"),
-    "Розовая":    ("#d94f8f", "#c2417e"),
+    "Сигнальная": (("#0f766e", "#0c5f58"), ("#0e7c75", "#0b645e")),
+    "Синяя":      (("#2563eb", "#1d4ed8"), ("#2f6fe0", "#2560c6")),
+    "Индиго":     (("#4f46e5", "#4338ca"), ("#5a5cf0", "#4a4cdb")),
+    "Зелёная":    (("#15803d", "#166534"), ("#1f9e57", "#1a8849")),
+    "Янтарная":   (("#b45309", "#92400e"), ("#c98a14", "#b0780f")),
+    "Розовая":    (("#be185d", "#9d174d"), ("#d94f8f", "#c2417e")),
 }
 APPEARANCE = {"Тёмная": "dark", "Светлая": "light", "Системная": "system"}
 
@@ -96,12 +102,20 @@ def _lighten(hexc, amt):
 
 
 def _apply_accent(name):
-    """Обновить глобальные ACCENT/ACCENT_HOVER/SEG_SEL из выбранной темы.
-    SEG_SEL/HOVER выводятся из акцента, чтобы выбранный сегмент совпадал по цвету."""
+    """Обновить глобальные ACCENT/ACCENT_HOVER/SEG_SEL под ТЕКУЩИЙ режим
+    (светлый/тёмный): у каждой темы свой акцент под каждый режим. Значения —
+    одиночные цвета для активного режима; интерфейс пересобирается при смене
+    режима/акцента, поэтому пересчёт здесь всегда актуален."""
     global ACCENT, ACCENT_HOVER, SEG_SEL, SEG_SEL_HOVER
-    ACCENT, ACCENT_HOVER = THEMES.get(name, THEMES["Сигнальная"])
-    SEG_SEL = (_lighten(ACCENT, 0.62), ACCENT)
-    SEG_SEL_HOVER = (_lighten(ACCENT_HOVER, 0.62), ACCENT_HOVER)
+    light_pair, dark_pair = THEMES.get(name, THEMES["Сигнальная"])
+    light_mode = ctk.get_appearance_mode() == "Light"
+    ACCENT, ACCENT_HOVER = light_pair if light_mode else dark_pair
+    if light_mode:
+        # выбранный сегмент — бледный тон акцента (тёмный текст на нём читается)
+        SEG_SEL = _lighten(ACCENT, 0.74)
+        SEG_SEL_HOVER = _lighten(ACCENT, 0.64)
+    else:
+        SEG_SEL, SEG_SEL_HOVER = ACCENT, ACCENT_HOVER
 
 
 APP_NAME = "Zapret GUI"
@@ -365,8 +379,9 @@ class ZapretApp(ctk.CTk):
     def _switch(self, parent, command=None):
         return ctk.CTkSwitch(parent, text="", command=command,
                              progress_color=ACCENT, fg_color=SWITCH_OFF,
-                             button_color=SWITCH_KNOB, border_width=2,
-                             border_color=SWITCH_BORDER)
+                             button_color=SWITCH_KNOB,
+                             button_hover_color=SWITCH_KNOB_HOVER,
+                             border_width=2, border_color=SWITCH_BORDER)
 
     def _cfg_switch(self, parent, key, default=False, on_msg=None, off_msg=None):
         """Тумблер, привязанный к булеву ключу конфига: сам сохраняет значение
@@ -1906,7 +1921,10 @@ class ZapretApp(ctk.CTk):
         self.cfg["appearance"] = mode
         zc.save_config(self.cfg)
         ctk.set_appearance_mode(mode)
-        self._init_ttk_style()   # перенастроить цвета таблицы под новый режим
+        # у акцента свой вариант под светлую/тёмную — пересчитать под новый режим
+        # и пересобрать интерфейс (акценты хранятся как одиночные цвета режима)
+        _apply_accent(self.cfg.get("accent_name", "Сигнальная"))
+        self._rebuild_ui()
         self.log_msg(f"Тема: {value.lower()}.")
 
     def _on_theme_change(self, value):
