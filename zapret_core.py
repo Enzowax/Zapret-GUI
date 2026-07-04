@@ -16,6 +16,7 @@ import sys
 import ssl
 import json
 import time
+import codecs
 import shutil
 import socket
 import ctypes
@@ -98,7 +99,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.34.0"
+APP_VERSION = "2.36.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -269,6 +270,16 @@ def refresh_defaults():
 # --------------------------------------------------------------------------- #
 #  Скрытый запуск команд
 # --------------------------------------------------------------------------- #
+# Консольные утилиты Windows (sc, net, netsh, tasklist…) пишут в OEM-кодировке
+# (cp866 на русской системе) — декодируем ею, иначе их русский вывод в журнале
+# превращается в кракозябры. На не-Windows кодека "oem" нет — берём utf-8.
+try:
+    codecs.lookup("oem")
+    CONSOLE_ENCODING = "oem"
+except LookupError:
+    CONSOLE_ENCODING = "utf-8"
+
+
 def _startupinfo():
     si = subprocess.STARTUPINFO()
     si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -280,7 +291,7 @@ def run_hidden(cmd, shell=False, timeout=30):
     return subprocess.run(
         cmd, shell=shell, capture_output=True, text=True,
         startupinfo=_startupinfo(), creationflags=CREATE_NO_WINDOW,
-        timeout=timeout, encoding="utf-8", errors="replace",
+        timeout=timeout, encoding=CONSOLE_ENCODING, errors="replace",
     )
 
 
