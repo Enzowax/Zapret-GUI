@@ -461,10 +461,9 @@ def _preset_id(name):
     return re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_") or "preset"
 
 
-def generate_presets_json(force=False):
-    """Сконвертировать .bat-стратегии в декларативный presets.json (однократно)."""
-    if os.path.exists(PRESETS_JSON) and not force:
-        return False
+def _presets_from_bats():
+    """Собрать список пресетов из .bat-стратегий (общий код для генерации
+    presets.json и фолбэка load_presets, когда файла ещё нет)."""
     presets = []
     for fname in list_strategies():
         argstr = extract_winws_argstring(os.path.join(BASE, fname))
@@ -472,18 +471,22 @@ def generate_presets_json(force=False):
             continue
         base = os.path.splitext(fname)[0]
         presets.append({
-            "id": _preset_id(base),
-            "name": base,
-            "source_bat": fname,
+            "id": _preset_id(base), "name": base, "source_bat": fname,
             "description": "",
             "label": "recommended" if fname == "general.bat" else None,
-            "engine": "winws1",
-            "args": argstr,
+            "engine": "winws1", "args": argstr,
         })
     presets.sort(key=lambda p: (p["name"] != "general", natural_key(p["name"])))
+    return presets
+
+
+def generate_presets_json(force=False):
+    """Сконвертировать .bat-стратегии в декларативный presets.json (однократно)."""
+    if os.path.exists(PRESETS_JSON) and not force:
+        return False
     try:
         with open(PRESETS_JSON, "w", encoding="utf-8") as f:
-            json.dump({"version": 1, "presets": presets}, f,
+            json.dump({"version": 1, "presets": _presets_from_bats()}, f,
                       ensure_ascii=False, indent=2)
         return True
     except Exception:
@@ -499,19 +502,7 @@ def load_presets():
             return presets
     except Exception:
         pass
-    presets = []
-    for fname in list_strategies():
-        argstr = extract_winws_argstring(os.path.join(BASE, fname))
-        if not argstr:
-            continue
-        base = os.path.splitext(fname)[0]
-        presets.append({
-            "id": _preset_id(base), "name": base, "source_bat": fname,
-            "description": "", "label": "recommended" if fname == "general.bat" else None,
-            "engine": "winws1", "args": argstr,
-        })
-    presets.sort(key=lambda p: (p["name"] != "general", natural_key(p["name"])))
-    return presets
+    return _presets_from_bats()
 
 
 def quote_for_service(tok):

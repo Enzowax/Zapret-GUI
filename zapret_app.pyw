@@ -172,7 +172,7 @@ class ZapretApp(ctk.CTk):
         self.after(4000, self._startup_lists_check)
         self.after(6000, self._startup_diag_badge)
         self.after(900, self._startup_service_restore)
-        threading.Thread(target=self._watchdog_loop, daemon=True).start()
+        self._bg(self._watchdog_loop)
         if self.autostart_launch:
             # запуск при входе в систему: поднять обход и прокси, свернуться в трей
             self.after(800, self._autostart_full)
@@ -342,6 +342,48 @@ class ZapretApp(ctk.CTk):
             hover_color=ACCENT_HOVER if accent else BTN_HOVER,
             text_color="#ffffff" if accent else TEXT)
 
+    def _switch(self, parent, command=None):
+        return ctk.CTkSwitch(parent, text="", command=command,
+                             progress_color=ACCENT, fg_color=SWITCH_OFF,
+                             button_color=SWITCH_KNOB, border_width=2,
+                             border_color=SWITCH_BORDER)
+
+    def _cfg_switch(self, parent, key, default=False, on_msg=None, off_msg=None):
+        """Тумблер, привязанный к булеву ключу конфига: сам сохраняет значение
+        и (опционально) пишет в журнал. Начальное положение — из конфига."""
+        sw = self._switch(parent)
+
+        def toggle():
+            val = bool(sw.get())
+            self.cfg[key] = val
+            zc.save_config(self.cfg)
+            if on_msg or off_msg:
+                self.log_msg(on_msg if val else off_msg)
+
+        sw.configure(command=toggle)
+        if self.cfg.get(key, default):
+            sw.select()
+        return sw
+
+    def _seg(self, parent, values, command=None, variable=None):
+        return ctk.CTkSegmentedButton(
+            parent, values=values, command=command, variable=variable,
+            font=(FONT, 12), text_color=TEXT, selected_color=SEG_SEL,
+            selected_hover_color=SEG_SEL_HOVER, fg_color=FIELD_BG,
+            unselected_color=FIELD_BG, unselected_hover_color=BTN_HOVER)
+
+    def _menu(self, parent, values, variable, command, width=160):
+        return ctk.CTkOptionMenu(
+            parent, values=values, variable=variable, command=command,
+            width=width, height=36, font=(FONT, 13), corner_radius=8,
+            fg_color=FIELD_BG, text_color=TEXT, dropdown_fg_color=CARD_BG,
+            dropdown_text_color=TEXT, button_color=ACCENT,
+            button_hover_color=ACCENT_HOVER)
+
+    def _bg(self, fn):
+        """Запустить функцию в фоновом daemon-потоке (обёртка для читаемости)."""
+        threading.Thread(target=fn, daemon=True).start()
+
     # -- страница: Управление --------------------------------------------- #
     def _build_control_page(self):
         p = self._page()
@@ -417,12 +459,8 @@ class ZapretApp(ctk.CTk):
             self.strategy_var.set("general")
         elif names:
             self.strategy_var.set(names[0])
-        self.strategy_menu = ctk.CTkOptionMenu(
-            box, values=names or ["—"], variable=self.strategy_var, width=290,
-            height=36, font=(FONT, 13), corner_radius=8, fg_color=FIELD_BG, text_color=TEXT,
-                          dropdown_fg_color=CARD_BG, dropdown_text_color=TEXT,
-            button_color=ACCENT, button_hover_color=ACCENT_HOVER,
-            command=self._on_strategy_pick)
+        self.strategy_menu = self._menu(box, names or ["—"], self.strategy_var,
+                                        self._on_strategy_pick, width=290)
         self.strategy_menu.pack(side="left", padx=4)
         self._btn(box, "Аргументы", self.show_args, width=110).pack(side="left", padx=4)
 
@@ -439,32 +477,25 @@ class ZapretApp(ctk.CTk):
 
         self._section(p, "Параметры обхода")
         c = self._card_row(p, "🎮", "Игровой фильтр", "Расширяет диапазон портов для игр")
-        self.game_seg = ctk.CTkSegmentedButton(
-            c, values=["Выкл", "TCP+UDP", "TCP", "UDP"], command=self._on_game_seg,
-            font=(FONT, 12), text_color=TEXT, selected_color=SEG_SEL,
-            selected_hover_color=SEG_SEL_HOVER, fg_color=FIELD_BG,
-            unselected_color=FIELD_BG, unselected_hover_color=BTN_HOVER)
+        self.game_seg = self._seg(c, ["Выкл", "TCP+UDP", "TCP", "UDP"],
+                                  command=self._on_game_seg)
         self.game_seg.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
         self.game_seg.set({"off": "Выкл", "all": "TCP+UDP", "tcp": "TCP",
                            "udp": "UDP"}[zc.get_game_mode()])
 
         c = self._card_row(p, "🚀", "Автозапуск обхода",
                            "Запускать обход при старте приложения")
-        self.autostart_switch = ctk.CTkSwitch(c, text="", command=self._on_autostart_toggle,
-                                              progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-                                        border_width=2, border_color=SWITCH_BORDER)
+        self.autostart_switch = self._cfg_switch(
+            c, "autostart_bypass",
+            on_msg="Автозапуск обхода: включён", off_msg="Автозапуск обхода: выключен")
         self.autostart_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
-        if self.cfg.get("autostart_bypass"):
-            self.autostart_switch.select()
 
         c = self._card_row(p, "🩺", "Авто-восстановление",
                            "Перезапускать обход, если он упал или перестал работать")
-        self.recovery_switch = ctk.CTkSwitch(c, text="", command=self._on_recovery_toggle,
-                                             progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-                                        border_width=2, border_color=SWITCH_BORDER)
+        self.recovery_switch = self._cfg_switch(
+            c, "auto_recovery",
+            on_msg="Авто-восстановление: включено", off_msg="Авто-восстановление: выключено")
         self.recovery_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
-        if self.cfg.get("auto_recovery"):
-            self.recovery_switch.select()
 
         c = self._card_row(p, "🔒", "Шифрованный DNS (DoH)",
                            "Системный DNS через DoH (часть блокировок — по DNS)")
@@ -473,16 +504,9 @@ class ZapretApp(ctk.CTk):
         _doh = zc.doh_status()
         self.doh_provider = ctk.StringVar(
             value={"cloudflare": "Cloudflare", "google": "Google"}.get(_doh["provider"], "Cloudflare"))
-        ctk.CTkSegmentedButton(box, values=["Cloudflare", "Google"],
-                               variable=self.doh_provider, font=(FONT, 12),
-                               command=self._on_doh_provider_change,
-                               text_color=TEXT, selected_color=SEG_SEL,
-                               selected_hover_color=SEG_SEL_HOVER, fg_color=FIELD_BG,
-                               unselected_color=FIELD_BG,
-                               unselected_hover_color=BTN_HOVER).pack(side="left", padx=6)
-        self.doh_switch = ctk.CTkSwitch(box, text="", command=self._on_doh_toggle,
-                                        progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-                                        border_width=2, border_color=SWITCH_BORDER)
+        self._seg(box, ["Cloudflare", "Google"], command=self._on_doh_provider_change,
+                  variable=self.doh_provider).pack(side="left", padx=6)
+        self.doh_switch = self._switch(box, self._on_doh_toggle)
         self.doh_switch.pack(side="left", padx=10)
         if _doh["enabled"]:
             self.doh_switch.select()
@@ -554,10 +578,7 @@ class ZapretApp(ctk.CTk):
                            "Включите, если при обходе в Dota 2 не грузятся гайды/"
                            "сборки/гильдия (контент Steam идёт через те же сети, что "
                            "и обход). Обход перестанет десинкать трафик Steam/Valve.")
-        self.games_excl_switch = ctk.CTkSwitch(
-            c, text="", command=self._on_games_excl_toggle,
-            progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-            border_width=2, border_color=SWITCH_BORDER)
+        self.games_excl_switch = self._switch(c, self._on_games_excl_toggle)
         self.games_excl_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20),
                                     pady=12, sticky="e")
         if zc.game_exclusions_present():
@@ -574,7 +595,7 @@ class ZapretApp(ctk.CTk):
         if changed and ((self.proc and self.proc.poll() is None)
                         or zc.service_running()):
             self.log_msg("Перезапуск обхода для применения исключений…")
-            threading.Thread(target=self._watchdog_restart, daemon=True).start()
+            self._bg(self._watchdog_restart)
 
     def _sites_load(self):
         domains = zc.read_user_domains()
@@ -604,7 +625,7 @@ class ZapretApp(ctk.CTk):
                                f"Сохранено доменов: {len(clean)}.\n"
                                "Перезапустить обход, чтобы применить сейчас?"):
             self.log_msg("[Свои сайты] перезапуск обхода для применения списка…")
-            threading.Thread(target=self._watchdog_restart, daemon=True).start()
+            self._bg(self._watchdog_restart)
 
     # -- страница: Авто-поиск --------------------------------------------- #
     def _build_auto_page(self):
@@ -759,10 +780,7 @@ class ZapretApp(ctk.CTk):
                            "Резерв через публичные Cloudflare-воркеры. Их общий пул "
                            "часто отдаёт 429 и вызывает обрывы — если Telegram и так "
                            "работает, выключите, чтобы убрать моргание.")
-        self.cfproxy_switch = ctk.CTkSwitch(
-            c, text="", command=self._on_cfproxy_toggle,
-            progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-            border_width=2, border_color=SWITCH_BORDER)
+        self.cfproxy_switch = self._switch(c, self._on_cfproxy_toggle)
         self.cfproxy_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
         if zc.tg_get_cfproxy():
             self.cfproxy_switch.select()
@@ -791,7 +809,7 @@ class ZapretApp(ctk.CTk):
         def worker():
             s = zc.tg_proxy_stats()
             self.post(lambda: self._apply_proxy_stats(s))
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def _apply_proxy_stats(self, s):
         if not hasattr(self, "pstat_conn"):
@@ -880,7 +898,7 @@ class ZapretApp(ctk.CTk):
                           "detail": str(e), "fix": None}]
             self.post(lambda: self._render_diag(items))
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def _render_diag(self, items):
         self._diag_busy = False
@@ -928,11 +946,11 @@ class ZapretApp(ctk.CTk):
             self.log_msg(f"[Диагностика] {msg}")
             self.post(self.on_diag_run)
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def on_diag_restart(self):
         self.log_msg("[Диагностика] перезапуск обхода…")
-        threading.Thread(target=self._watchdog_restart, daemon=True).start()
+        self._bg(self._watchdog_restart)
 
     # -- страница: Настройки приложения ----------------------------------- #
     def _build_settings_page(self):
@@ -952,9 +970,7 @@ class ZapretApp(ctk.CTk):
 
         c = self._card_row(p, "🔄", "Автопроверка обновлений",
                            "Проверять новые версии при запуске")
-        self.update_switch = ctk.CTkSwitch(c, text="", command=self._on_update_toggle,
-                                           progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-                                        border_width=2, border_color=SWITCH_BORDER)
+        self.update_switch = self._switch(c, self._on_update_toggle)
         self.update_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
         if zc.get_update_enabled():
             self.update_switch.select()
@@ -964,43 +980,27 @@ class ZapretApp(ctk.CTk):
         self.appearance_var = ctk.StringVar(
             value={v: k for k, v in APPEARANCE.items()}.get(
                 self.cfg.get("appearance", "dark"), "Тёмная"))
-        ctk.CTkSegmentedButton(c, values=list(APPEARANCE.keys()),
-                               variable=self.appearance_var, font=(FONT, 12),
-                               command=self._on_appearance_change,
-                               text_color=TEXT, selected_color=SEG_SEL,
-                               selected_hover_color=SEG_SEL_HOVER, fg_color=FIELD_BG,
-                               unselected_color=FIELD_BG,
-                               unselected_hover_color=BTN_HOVER).grid(
+        self._seg(c, list(APPEARANCE.keys()), command=self._on_appearance_change,
+                  variable=self.appearance_var).grid(
             row=0, column=2, rowspan=2, padx=14, pady=12)
 
         c = self._card_row(p, "🎨", "Акцентный цвет", "Цвет кнопок и выделения")
         self.theme_var = ctk.StringVar(
             value=self.cfg.get("accent_name") if self.cfg.get("accent_name") in THEMES
             else "Сигнальная")
-        ctk.CTkOptionMenu(c, values=list(THEMES.keys()), variable=self.theme_var,
-                          command=self._on_theme_change, width=160, height=36,
-                          font=(FONT, 13), corner_radius=8, fg_color=FIELD_BG, text_color=TEXT,
-                          dropdown_fg_color=CARD_BG, dropdown_text_color=TEXT,
-                          button_color=ACCENT, button_hover_color=ACCENT_HOVER).grid(
+        self._menu(c, list(THEMES.keys()), self.theme_var, self._on_theme_change).grid(
             row=0, column=2, rowspan=2, padx=14, pady=12)
 
         self._section(p, "Поведение")
         c = self._card_row(p, "📥", "Сворачивать в трей",
                            "При закрытии окна прятать в трей (обход продолжит работать)")
-        self.tray_switch = ctk.CTkSwitch(c, text="", command=self._on_tray_toggle,
-                                         progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-                                        border_width=2, border_color=SWITCH_BORDER)
+        self.tray_switch = self._cfg_switch(c, "minimize_to_tray", default=True)
         self.tray_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
-        if self.cfg.get("minimize_to_tray", True):
-            self.tray_switch.select()
 
         c = self._card_row(p, "🚀", "Полный автозапуск при включении ПК",
                            "Приложение, обход и Telegram-прокси стартуют при входе "
                            "в систему (свернётся в трей)")
-        self.full_autostart_switch = ctk.CTkSwitch(
-            c, text="", command=self._on_full_autostart_toggle,
-            progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-            border_width=2, border_color=SWITCH_BORDER)
+        self.full_autostart_switch = self._switch(c, self._on_full_autostart_toggle)
         self.full_autostart_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20),
                                         pady=12, sticky="e")
         # проверка автозапуска медленная (PowerShell ~0.5с) — не блокируем старт
@@ -1008,41 +1008,26 @@ class ZapretApp(ctk.CTk):
             on = zc.autostart_enabled()
             self.post(lambda: self.full_autostart_switch.select() if on
                       else self.full_autostart_switch.deselect())
-        threading.Thread(target=_chk_autostart, daemon=True).start()
+        self._bg(_chk_autostart)
 
         self._section(p, "Списки и обход")
         c = self._card_row(p, "📃", "Автообновление списков и IPSet",
                            "Раз в неделю подтягивать свежие списки сайтов и IP-набор "
                            "(ipset-all) из upstream — чтобы обход не устаревал")
-        self.lists_auto_switch = ctk.CTkSwitch(
-            c, text="", command=self._on_lists_auto_toggle,
-            progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-            border_width=2, border_color=SWITCH_BORDER)
+        self.lists_auto_switch = self._cfg_switch(c, "lists_auto_update")
         self.lists_auto_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
-        if self.cfg.get("lists_auto_update"):
-            self.lists_auto_switch.select()
 
         c = self._card_row(p, "🔁", "Авто-переподбор при сбое",
                            "Если все запасные стратегии перестали работать — "
                            "автоматически запустить авто-поиск и применить лучшую")
-        self.research_switch = ctk.CTkSwitch(
-            c, text="", command=self._on_research_toggle,
-            progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-            border_width=2, border_color=SWITCH_BORDER)
+        self.research_switch = self._cfg_switch(c, "auto_research_on_fail")
         self.research_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
-        if self.cfg.get("auto_research_on_fail"):
-            self.research_switch.select()
 
         c = self._card_row(p, "🔔", "Уведомления",
                            "Всплывающие сообщения о событиях обхода (переключение, "
                            "восстановление, обновление списков)")
-        self.notif_switch = ctk.CTkSwitch(
-            c, text="", command=self._on_notifications_toggle,
-            progress_color=ACCENT, fg_color=SWITCH_OFF, button_color=SWITCH_KNOB,
-            border_width=2, border_color=SWITCH_BORDER)
+        self.notif_switch = self._cfg_switch(c, "notifications", default=True)
         self.notif_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
-        if self.cfg.get("notifications", True):
-            self.notif_switch.select()
 
         self._section(p, "Антивирус")
         c = self._card_row(p, "🛡", "Windows Defender",
@@ -1197,7 +1182,7 @@ class ZapretApp(ctk.CTk):
             tg = zc.tg_proxy_running()
             self.post(lambda: self._apply_status(running, installed, svc_run, ipset, tg))
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def _apply_status(self, running, installed, svc_run, ipset, tg):
         self._status_busy = False
@@ -1298,16 +1283,23 @@ class ZapretApp(ctk.CTk):
         self._on_strategy_pick()
         self.log_msg(f"--- Запуск пресета: {preset['name']} (фильтр игр: {mode}) ---")
         try:
-            self.proc = zc.start_winws_logged(args)
+            self._spawn_winws(args, preset["name"])
         except Exception as e:
             self.log_msg(f"[ОШИБКА] {e}")
             messagebox.showerror("Zapret", f"Не удалось запустить winws.exe:\n{e}")
             return
-        self.active_args = args
-        self.active_preset_name = preset["name"]
-        threading.Thread(target=self._read_output, args=(self.proc,), daemon=True).start()
         self.log_msg("winws.exe запущен.")
         self.after(700, self.refresh_status)
+
+    def _spawn_winws(self, args, name=None):
+        """Запустить winws с чтением вывода в журнал и запомнить, что работает
+        (active_args/active_preset_name нужны watchdog'у и статусу)."""
+        self.proc = zc.start_winws_logged(args)
+        self.active_args = args
+        if name:
+            self.active_preset_name = name
+        threading.Thread(target=self._read_output, args=(self.proc,),
+                         daemon=True).start()
 
     def _read_output(self, proc):
         try:
@@ -1361,7 +1353,7 @@ class ZapretApp(ctk.CTk):
                     self.refresh_status()
                 self.post(done)
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def on_install_service(self):
         preset = self._selected_preset()
@@ -1393,7 +1385,7 @@ class ZapretApp(ctk.CTk):
             self.log_msg("Служба установлена." if ok else "[ОШИБКА] Служба не установлена.")
             self.post(self.refresh_status)
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def on_remove_service(self):
         if not zc.service_installed():
@@ -1407,7 +1399,7 @@ class ZapretApp(ctk.CTk):
             self.log_msg("Служба удалена.")
             self.post(self.refresh_status)
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     # -- настройки / инструменты ------------------------------------------ #
     def _on_game_seg(self, value):
@@ -1419,18 +1411,6 @@ class ZapretApp(ctk.CTk):
         en = bool(self.update_switch.get())
         zc.set_update_enabled(en)
         self.log_msg("Проверка обновлений: " + ("включена" if en else "выключена"))
-
-    def _on_autostart_toggle(self):
-        self.cfg["autostart_bypass"] = bool(self.autostart_switch.get())
-        zc.save_config(self.cfg)
-        self.log_msg("Автозапуск обхода: "
-                     + ("включён" if self.cfg["autostart_bypass"] else "выключен"))
-
-    def _on_recovery_toggle(self):
-        self.cfg["auto_recovery"] = bool(self.recovery_switch.get())
-        zc.save_config(self.cfg)
-        self.log_msg("Авто-восстановление: "
-                     + ("включено" if self.cfg["auto_recovery"] else "выключено"))
 
     # -- первый запуск ---------------------------------------------------- #
     def _first_run_wizard(self):
@@ -1464,7 +1444,7 @@ class ZapretApp(ctk.CTk):
             self.cfg.pop("svc_stopped_for_search", None)
             zc.save_config(self.cfg)
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def _autostart_bypass(self):
         if zc.service_running():
@@ -1480,22 +1460,7 @@ class ZapretApp(ctk.CTk):
         if zc.tg_proxy_running():
             return
         self.log_msg("Автозапуск Telegram-прокси…")
-
-        def worker():
-            try:
-                zc.tg_proxy_start()
-                time.sleep(1.3)
-            except Exception as e:
-                self.log_msg(f"[ОШИБКА] Telegram-прокси: {e}")
-                return
-            if zc.tg_proxy_running():
-                self.log_msg("Telegram-прокси запущен.")
-            else:
-                self.log_msg("[ОШИБКА] Telegram-прокси не запустился: "
-                             + (zc.tg_last_error() or "возможно, порт занят"))
-            self.post(self.refresh_status)
-
-        threading.Thread(target=worker, daemon=True).start()
+        self._tg_start_verified(ok_msg="Telegram-прокси запущен.")
 
     def _autostart_full(self):
         # запуск при входе в систему: обход + прокси + сворачивание в трей
@@ -1570,9 +1535,7 @@ class ZapretApp(ctk.CTk):
                     pass
             zc.kill_winws_only()
             time.sleep(1.0)
-            self.proc = zc.start_winws_logged(self.active_args)
-            threading.Thread(target=self._read_output, args=(self.proc,),
-                             daemon=True).start()
+            self._spawn_winws(self.active_args)
             self.post(self.refresh_status)
         except Exception as e:
             self.log_msg(f"[watchdog] не удалось перезапустить: {e}")
@@ -1642,11 +1605,7 @@ class ZapretApp(ctk.CTk):
             zc.kill_winws_only()
             time.sleep(1.0)
             self.log_msg(f"--- Запуск пресета: {name} (переключение) ---")
-            self.proc = zc.start_winws_logged(args)
-            self.active_args = args
-            self.active_preset_name = name
-            threading.Thread(target=self._read_output, args=(self.proc,),
-                             daemon=True).start()
+            self._spawn_winws(args, name)
             self.cfg["strategy"] = name
             zc.save_config(self.cfg)
             self.post(lambda: self.strategy_var.set(name))
@@ -1669,7 +1628,7 @@ class ZapretApp(ctk.CTk):
             except Exception as e:
                 self.log_msg(f"[ОШИБКА] отчёт: {e}")
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def on_open_logs(self):
         try:
@@ -1723,7 +1682,7 @@ class ZapretApp(ctk.CTk):
             ok, msg = zc.add_defender_exclusion(zc.BASE)
             self.log_msg(("Defender: " if ok else "[!] Defender: ") + msg)
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def on_export_settings(self):
         path = filedialog.asksaveasfilename(
@@ -1757,22 +1716,6 @@ class ZapretApp(ctk.CTk):
             self.log_msg(f"[ОШИБКА] импорт: {e}")
 
     # -- трей ------------------------------------------------------------- #
-    def _on_tray_toggle(self):
-        self.cfg["minimize_to_tray"] = bool(self.tray_switch.get())
-        zc.save_config(self.cfg)
-
-    def _on_lists_auto_toggle(self):
-        self.cfg["lists_auto_update"] = bool(self.lists_auto_switch.get())
-        zc.save_config(self.cfg)
-
-    def _on_research_toggle(self):
-        self.cfg["auto_research_on_fail"] = bool(self.research_switch.get())
-        zc.save_config(self.cfg)
-
-    def _on_notifications_toggle(self):
-        self.cfg["notifications"] = bool(self.notif_switch.get())
-        zc.save_config(self.cfg)
-
     def _on_full_autostart_toggle(self):
         on = bool(self.full_autostart_switch.get())
         self.log_msg("Настройка полного автозапуска…")
@@ -1790,7 +1733,7 @@ class ZapretApp(ctk.CTk):
                 zc.disable_autostart()
                 self.log_msg("Полный автозапуск выключен.")
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def _make_tray_image(self, running):
         try:
@@ -1867,13 +1810,13 @@ class ZapretApp(ctk.CTk):
             self.log_msg(msg)
             self.post(self.refresh_status)
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     # -- здоровье обхода -------------------------------------------------- #
     def on_health_check(self):
         if getattr(self, "_health_busy", False):
             return
-        threading.Thread(target=self._health_worker, daemon=True).start()
+        self._bg(self._health_worker)
 
     def _health_worker(self):
         self._health_busy = True
@@ -1933,7 +1876,7 @@ class ZapretApp(ctk.CTk):
                 n_bad = 0
             self.post(lambda: self._set_diag_badge(n_bad))
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def _refresh_lists_label(self):
         ts = zc.lists_last_update_ts()
@@ -1970,7 +1913,7 @@ class ZapretApp(ctk.CTk):
                     self.log_msg("Перезапуск обхода для применения обновлений…")
                     self._watchdog_restart()
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def on_diagnostics(self):
         # кнопка из «Инструментов» открывает страницу диагностики и запускает проверку
@@ -2006,7 +1949,7 @@ class ZapretApp(ctk.CTk):
                     self.upd_label.configure(text=f"актуально ({info.get('current','')})")
             self.post(show)
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def on_check_update(self):
         self.upd_label.configure(text="проверка…")
@@ -2016,7 +1959,7 @@ class ZapretApp(ctk.CTk):
             info = zc.check_update()
             self.post(lambda: self._show_update_result(info))
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def _show_update_result(self, info):
         if info.get("error"):
@@ -2065,7 +2008,7 @@ class ZapretApp(ctk.CTk):
                 self.log_msg(f"[ОШИБКА] обновление: {e}")
                 self.post(lambda: self.upd_label.configure(text="ошибка"))
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def _quit_for_update(self):
         self.log_msg("Закрываю приложение для применения обновления…")
@@ -2088,25 +2031,32 @@ class ZapretApp(ctk.CTk):
         box.configure(state="disabled")
 
     # -- Telegram-прокси (встроенный) ------------------------------------- #
-    def on_tg_start(self):
-        self.log_msg(f"Запуск встроенного Telegram-прокси на "
-                     f"{zc.TG_DEFAULT_HOST}:{zc.tg_get_port()}…")
-
+    def _tg_start_verified(self, ok_msg="Прокси запущен.", on_ok=None):
+        """Запустить встроенный прокси в фоне и честно доложить результат
+        в журнал (общий код для кнопки, автозапуска и «Открыть в Telegram»)."""
         def worker():
             try:
                 zc.tg_proxy_start()
                 time.sleep(1.3)
-                if zc.tg_proxy_running():
-                    self.log_msg("Прокси запущен. Нажмите «Открыть в Telegram» "
-                                 "или «Скопировать».")
-                else:
-                    self.log_msg("[ОШИБКА] прокси не запустился: "
-                                 + (zc.tg_last_error() or "возможно, порт занят"))
             except Exception as e:
                 self.log_msg(f"[ОШИБКА] Telegram-прокси: {e}")
+                return
+            if zc.tg_proxy_running():
+                self.log_msg(ok_msg)
+                if on_ok:
+                    self.post(on_ok)
+            else:
+                self.log_msg("[ОШИБКА] прокси не запустился: "
+                             + (zc.tg_last_error() or "возможно, порт занят"))
             self.post(self.refresh_status)
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
+
+    def on_tg_start(self):
+        self.log_msg(f"Запуск встроенного Telegram-прокси на "
+                     f"{zc.TG_DEFAULT_HOST}:{zc.tg_get_port()}…")
+        self._tg_start_verified(
+            ok_msg="Прокси запущен. Нажмите «Открыть в Telegram» или «Скопировать».")
 
     def on_tg_stop(self):
         self.log_msg("Остановка Telegram-прокси…")
@@ -2116,7 +2066,7 @@ class ZapretApp(ctk.CTk):
             self.log_msg("Telegram-прокси остановлен.")
             self.post(self.refresh_status)
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def on_tg_apply_port(self):
         try:
@@ -2148,7 +2098,7 @@ class ZapretApp(ctk.CTk):
                 zc.tg_proxy_start()
                 self.log_msg("Прокси перезапущен.")
             self.post(self.refresh_status)
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def _on_cfproxy_toggle(self):
         on = bool(self.cfproxy_switch.get())
@@ -2174,7 +2124,7 @@ class ZapretApp(ctk.CTk):
             except Exception as e:
                 self.log_msg(f"[ОШИБКА] DNS: {e}")
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
     def _on_doh_provider_change(self, _value=None):
         # если DoH уже включён — сразу переключить DNS на нового провайдера
@@ -2190,7 +2140,7 @@ class ZapretApp(ctk.CTk):
             except Exception as e:
                 self.log_msg(f"[ОШИБКА] DNS: {e}")
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._bg(worker)
 
 
     def on_tg_copy(self):
@@ -2217,26 +2167,9 @@ class ZapretApp(ctk.CTk):
         if zc.tg_proxy_running():
             self._open_link(link)
             return
-        # раньше писали «сначала запустите прокси», но ссылку всё равно
-        # открывали — теперь просто запускаем прокси сами и открываем
+        # прокси не запущен — запускаем его сами и открываем ссылку после
         self.log_msg("Прокси не запущен — запускаю и открываю Telegram…")
-
-        def worker():
-            try:
-                zc.tg_proxy_start()
-                time.sleep(1.3)
-            except Exception as e:
-                self.log_msg(f"[ОШИБКА] Telegram-прокси: {e}")
-                return
-            if not zc.tg_proxy_running():
-                self.log_msg("[ОШИБКА] прокси не запустился: "
-                             + (zc.tg_last_error() or "возможно, порт занят"))
-                return
-            self.log_msg("Прокси запущен.")
-            self.post(self.refresh_status)
-            self.post(lambda: self._open_link(link))
-
-        threading.Thread(target=worker, daemon=True).start()
+        self._tg_start_verified(on_ok=lambda: self._open_link(link))
 
     # -- авто-поиск (двухфазный) ------------------------------------------ #
     def on_auto_start(self):
@@ -2480,8 +2413,7 @@ class ZapretApp(ctk.CTk):
                 name = self.auto_best[0]
                 self.log_msg(f"[watchdog] применяю найденную стратегию «{name}»")
                 self._notify("Обход восстановлен", f"Включена стратегия «{name}».")
-                threading.Thread(target=lambda n=name: self._switch_to(n),
-                                 daemon=True).start()
+                self._bg(lambda n=name: self._switch_to(n))
             else:
                 self._notify("Авто-поиск", "Рабочая стратегия не найдена.")
         self.refresh_status()
@@ -2498,8 +2430,7 @@ class ZapretApp(ctk.CTk):
         if zc.service_installed() or (self.proc and self.proc.poll() is None) \
                 or zc.winws_running():
             self.log_msg(f"Применяю «{name}» к работающему обходу…")
-            threading.Thread(target=lambda: self._switch_to(name),
-                             daemon=True).start()
+            self._bg(lambda: self._switch_to(name))
         else:
             self.on_start()
 
