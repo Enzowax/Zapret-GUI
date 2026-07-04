@@ -2339,7 +2339,6 @@ class ZapretApp(ctk.CTk):
 
         self._bg(worker)
 
-
     def on_tg_copy(self):
         link = zc.tg_proxy_url()
         try:
@@ -2408,7 +2407,6 @@ class ZapretApp(ctk.CTk):
             self.log_msg("Авто-поиск: запрошена остановка…")
 
     def _auto_sleep(self, seconds):
-        import time
         end = time.time() + seconds
         while time.time() < end:
             if self.auto_cancel:

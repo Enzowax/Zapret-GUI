@@ -99,7 +99,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.38.0"
+APP_VERSION = "2.38.1"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -507,7 +507,10 @@ def load_presets():
 
 def quote_for_service(tok):
     q = '\\"'
-    needs = lambda v: (":" in v) or (" " in v)
+
+    def needs(v):
+        return (":" in v) or (" " in v)
+
     if tok.startswith("--") and "=" in tok:
         k, v = tok.split("=", 1)
         if needs(v):
@@ -1573,10 +1576,10 @@ def cleanup_xbox_legacy():
     # 2) убрать наши домены из list-exclude-user.txt
     try:
         if os.path.exists(LIST_EXCLUDE_USER):
-            existing = [l.strip() for l in
+            existing = [ln.strip() for ln in
                         open(LIST_EXCLUDE_USER, encoding="utf-8", errors="replace")
                         .read().splitlines()]
-            others = [l for l in existing if l and l not in _XBOX_LEGACY_DOMAINS]
+            others = [ln for ln in existing if ln and ln not in _XBOX_LEGACY_DOMAINS]
             if not others:
                 others = [_EXCLUDE_PLACEHOLDER]
             with open(LIST_EXCLUDE_USER, "w", encoding="utf-8") as f:
@@ -1612,15 +1615,15 @@ def _read_exclude_user():
     if not os.path.exists(LIST_EXCLUDE_USER):
         return []
     try:
-        return [l.strip() for l in
+        return [ln.strip() for ln in
                 open(LIST_EXCLUDE_USER, encoding="utf-8", errors="replace")
-                .read().splitlines() if l.strip()]
+                .read().splitlines() if ln.strip()]
     except Exception:
         return []
 
 
 def _write_exclude_user(lines):
-    lines = [l for l in lines if l and l != _EXCLUDE_PLACEHOLDER]
+    lines = [ln for ln in lines if ln and ln != _EXCLUDE_PLACEHOLDER]
     os.makedirs(LISTS, exist_ok=True)
     with open(LIST_EXCLUDE_USER, "w", encoding="utf-8") as f:
         f.write("\n".join(lines or [_EXCLUDE_PLACEHOLDER]) + "\n")
@@ -1643,7 +1646,7 @@ def set_game_exclusions(on):
                 return False
             _write_exclude_user(existing + added)
         else:
-            kept = [l for l in existing if l not in GAME_EXCLUDE_DOMAINS]
+            kept = [ln for ln in existing if ln not in GAME_EXCLUDE_DOMAINS]
             if len(kept) == len(existing):
                 return False
             _write_exclude_user(kept)
