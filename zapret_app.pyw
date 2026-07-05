@@ -2625,14 +2625,7 @@ class ZapretApp(ctk.CTk):
             if self.auto_cancel:
                 candidates = []
             else:
-                full_pass = [p for p in phase1 if p[1] == len(quick_hosts)]
-                if full_pass:
-                    full_pass.sort(key=lambda x: (x[2] or 9e9))
-                    candidates = [p[0] for p in full_pass[:MAX_CAND]]
-                else:
-                    scored = [p for p in phase1 if p[1] > 0]
-                    scored.sort(key=lambda x: (-x[1], x[2] or 9e9))
-                    candidates = [p[0] for p in scored[:MAX_CAND]]
+                candidates = zc.select_candidates(phase1, len(quick_hosts), MAX_CAND)
 
             # Фаза 2 — точная проверка
             if candidates:
@@ -2707,9 +2700,7 @@ class ZapretApp(ctk.CTk):
         self.log_msg(f"  фаза 2 (точно): {name} — {total_str}"
                      + (f" (~{ms} мс)" if avg_lat else ""))
         if total > 0:
-            cur = (total, -(avg_lat if avg_lat else 1e9))
-            best = (self.auto_best[1], -(self.auto_best[2] or 1e9)) if self.auto_best else None
-            if best is None or cur > best:
+            if zc.result_is_better((name, total, avg_lat), self.auto_best):
                 self.auto_best = (name, total, avg_lat)
             self.btn_apply_best.configure(state="normal")
             self.btn_install_best.configure(state="normal")

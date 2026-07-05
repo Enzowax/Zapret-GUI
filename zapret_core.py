@@ -99,7 +99,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.40.1"
+APP_VERSION = "2.40.2"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -457,6 +457,42 @@ def prioritize_presets(presets, last_name=None, pool=None):
     return sorted(presets, key=rank)
 
 
+def select_candidates(phase1, full_score, max_cand=6):
+    """Отобрать кандидатов фазы 2 из результатов быстрого отсева фазы 1.
+
+    phase1 — список кортежей (name, score, avg_lat); score — сколько целей
+    пробилось в быстрой проверке, avg_lat — средняя задержка (или None).
+    Приоритет: сперва пресеты с ПОЛНЫМ score (по возрастанию задержки), а если
+    полностью рабочих нет — частично рабочие (по убыванию score, затем задержке).
+    Возвращает список имён (не более max_cand). Логика вынесена из GUI-потока
+    сюда, чтобы её можно было проверить тестами."""
+    def lat(x):
+        # ВАЖНО: отличать None (нет данных -> в конец) от 0.0 (мгновенно).
+        # Прежний `x[2] or 9e9` ошибочно считал 0.0 за «нет данных».
+        return 9e9 if x[2] is None else x[2]
+
+    full = [p for p in phase1 if p[1] == full_score]
+    if full:
+        full.sort(key=lat)
+        return [p[0] for p in full[:max_cand]]
+    scored = [p for p in phase1 if p[1] > 0]
+    scored.sort(key=lambda x: (-x[1], lat(x)))
+    return [p[0] for p in scored[:max_cand]]
+
+
+def result_is_better(new, cur):
+    """Сравнить два результата точной проверки: (name, total, avg_lat) или None.
+    Лучше — большее покрытие (total); при равном — меньшая задержка.
+    -> True, если new строго лучше cur (или cur ещё нет)."""
+    if new is None or new[1] <= 0:
+        return False
+    if cur is None:
+        return True
+    new_lat = 1e9 if new[2] is None else new[2]   # None != 0.0 (см. select_candidates)
+    cur_lat = 1e9 if cur[2] is None else cur[2]
+    return (new[1], -new_lat) > (cur[1], -cur_lat)
+
+
 def _preset_id(name):
     return re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_") or "preset"
 
@@ -528,7 +564,8 @@ def get_game_mode():
     if not os.path.exists(GAME_FLAG):
         return "off"
     try:
-        txt = open(GAME_FLAG, encoding="utf-8", errors="replace").read().strip().lower()
+        with open(GAME_FLAG, encoding="utf-8", errors="replace") as f:
+            txt = f.read().strip().lower()
     except Exception:
         return "off"
     return txt if txt in ("all", "tcp", "udp") else "udp"
@@ -584,11 +621,23 @@ def load_config():
         return {}
 
 
+_cfg_write_lock = threading.Lock()
+
+
 def save_config(cfg):
+    # Конфиг пишется из разных потоков (тумблеры, авто-поиск, watchdog). Снимок
+    # dict(cfg) под GIL атомарен — исключает "dictionary changed size during
+    # iteration" при сериализации живого словаря; блокировка сериализует записи
+    # в файл (без неё два потока могли перезаписать файл вперемешку).
+    try:
+        snapshot = dict(cfg)
+    except Exception:
+        snapshot = cfg
     try:
         os.makedirs(UTILS, exist_ok=True)
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        with _cfg_write_lock:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
 
@@ -1576,9 +1625,8 @@ def cleanup_xbox_legacy():
     # 2) убрать наши домены из list-exclude-user.txt
     try:
         if os.path.exists(LIST_EXCLUDE_USER):
-            existing = [ln.strip() for ln in
-                        open(LIST_EXCLUDE_USER, encoding="utf-8", errors="replace")
-                        .read().splitlines()]
+            with open(LIST_EXCLUDE_USER, encoding="utf-8", errors="replace") as _f:
+                existing = [ln.strip() for ln in _f.read().splitlines()]
             others = [ln for ln in existing if ln and ln not in _XBOX_LEGACY_DOMAINS]
             if not others:
                 others = [_EXCLUDE_PLACEHOLDER]

@@ -62,6 +62,83 @@ def test_version_tuple_ordering():
     assert zc._version_tuple("v1.0") == zc._version_tuple("1.0.0")[:2]
 
 
+def test_version_tuple_prerelease_and_release():
+    # релиз новее любой своей пре-релизной беты (бета -> 0 в позиции суффикса)
+    assert zc._version_tuple("2.40.1") > zc._version_tuple("2.40.0")
+    assert zc._version_tuple("v2.41.0") > zc._version_tuple("v2.40.9")
+    # мусор/пусто не падает и не «выигрывает» у нормальной версии
+    assert zc._version_tuple("") == (0,)
+    assert zc._version_tuple("2.40.0") > zc._version_tuple("")
+
+
+# --- отбор кандидатов авто-поиска (фаза 1 -> фаза 2) ---------------------- #
+def test_select_candidates_prefers_full_pass_by_latency():
+    # полностью пробившие (score==2) идут первыми, отсортированы по задержке
+    phase1 = [("A", 2, 120.0), ("B", 1, 30.0), ("C", 2, 40.0), ("D", 0, None)]
+    assert zc.select_candidates(phase1, full_score=2, max_cand=6) == ["C", "A"]
+
+
+def test_select_candidates_falls_back_to_partial():
+    # полностью рабочих нет -> берём частичные по убыванию score, затем задержке
+    phase1 = [("A", 1, 90.0), ("B", 1, 30.0), ("C", 0, None)]
+    assert zc.select_candidates(phase1, full_score=3, max_cand=6) == ["B", "A"]
+
+
+def test_select_candidates_caps_and_handles_empty():
+    phase1 = [(f"P{i}", 2, float(i)) for i in range(10)]
+    assert zc.select_candidates(phase1, 2, max_cand=3) == ["P0", "P1", "P2"]
+    assert zc.select_candidates([], 2) == []
+    assert zc.select_candidates([("X", 0, None)], 2) == []   # ноль не берём
+
+
+# --- выбор лучшей стратегии (фаза 2) ------------------------------------- #
+def test_result_is_better_by_coverage_then_latency():
+    # больше покрытие важнее задержки
+    assert zc.result_is_better(("A", 8, 200.0), ("B", 7, 10.0)) is True
+    # при равном покрытии — меньше задержка
+    assert zc.result_is_better(("A", 8, 90.0), ("B", 8, 91.0)) is True
+    assert zc.result_is_better(("A", 8, 91.0), ("B", 8, 90.0)) is False
+    # первый валидный результат всегда лучше «ничего»
+    assert zc.result_is_better(("A", 5, None), None) is True
+    # нулевое/пустое покрытие не может стать лучшим (баг «0/3 как рабочая»)
+    assert zc.result_is_better(("A", 0, 5.0), ("B", 1, 500.0)) is False
+    assert zc.result_is_better(None, ("B", 1, 500.0)) is False
+    # строго лучше: равные не вытесняют (стабильность «первого найденного»)
+    assert zc.result_is_better(("A", 8, 90.0), ("B", 8, 90.0)) is False
+
+
+# --- аргументы службы (экранирование) ------------------------------------ #
+def test_quote_for_service_escapes_spaces_and_colons():
+    # значение с пробелом/двоеточием -> в экранированных кавычках \"
+    assert zc.quote_for_service('--wf-l3=ipv4') == '--wf-l3=ipv4'      # без спец — как есть
+    assert zc.quote_for_service('--hostlist=C:\\a b.txt') == '--hostlist=\\"C:\\a b.txt\\"'
+    assert zc.quote_for_service('--new') == '--new'
+    assert zc.quote_for_service('plain') == 'plain'
+    assert zc.quote_for_service('has space') == '\\"has space\\"'
+
+
+# --- игровой фильтр / id пресета ----------------------------------------- #
+def test_game_filter_values():
+    assert zc.game_filter_values("off") == ("12", "12")
+    assert zc.game_filter_values("all") == ("1024-65535", "1024-65535")
+    assert zc.game_filter_values("tcp") == ("1024-65535", "12")
+    assert zc.game_filter_values("udp") == ("12", "1024-65535")
+    assert zc.game_filter_values("bogus") == ("12", "12")     # неизвестное -> выкл
+
+
+def test_preset_id_sanitizes():
+    assert zc._preset_id("general (ALT12)") == "general_alt12"
+    assert zc._preset_id("FAKE TLS AUTO") == "fake_tls_auto"
+    assert zc._preset_id("!!!") == "preset"                   # пусто -> запасное имя
+
+
+# --- сравнение путей автозапуска ----------------------------------------- #
+def test_same_path_normalizes_case_and_slashes():
+    assert zc._same_path("C:\\Zapret GUI\\app.exe", "c:/zapret gui/app.exe") is True
+    assert zc._same_path("C:\\a\\app.exe", "C:\\b\\app.exe") is False
+    assert zc._same_path("", "x") is False
+
+
 # --- tokenize / substitute / build_args ---------------------------------- #
 def test_tokenize_respects_quotes():
     toks = zc.tokenize('--a=1 --b="c d" --e')
