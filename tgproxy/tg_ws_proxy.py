@@ -36,13 +36,11 @@ log = logging.getLogger('tg-mtproto-proxy')
 IP_FAIL_COOLDOWN = 3600.0
 DC_FAIL_COOLDOWN = 60.0
 WS_FAIL_TIMEOUT = 2.0
-FRONTING_COOLDOWN = 1800.0
 LISTENER_CHECK_INTERVAL = 5.0
 LISTENER_RESTART_DELAY = 1.0
 ws_blacklist: Set[str] = set()
 dc_fail_until: Dict[str, float] = {}
 ip_fail_until: Dict[str, float] = {}
-fronting_until: float = 0.0
 
 
 def _try_handshake(handshake: bytes, secret: bytes) -> Optional[Tuple[int, bool, bytes, bytes]]:
@@ -250,8 +248,6 @@ def _build_crypto_ctx(client_dec_prekey_iv, secret, relay_init):
 
 
 async def _handle_client(reader, writer, secret: bytes):
-    global fronting_until
-    
     stats.connections_total += 1
     stats.connections_active += 1
     peer = writer.get_extra_info('peername')
@@ -280,6 +276,11 @@ async def _handle_client(reader, writer, secret: bytes):
 
         dc, is_media, proto_tag, client_dec_prekey_iv = result
 
+        is_test_dc = proxy_config.force_test_dc or dc >= 10000
+        if dc >= 10000:
+            log.info("[%s] test DC%d -> DC%d", label, dc, dc - 10000)
+            dc -= 10000
+
         if proto_tag == PROTO_TAG_ABRIDGED:
             proto_int = PROTO_ABRIDGED_INT
         elif proto_tag == PROTO_TAG_INTERMEDIATE:
@@ -295,14 +296,17 @@ async def _handle_client(reader, writer, secret: bytes):
         relay_init = _generate_relay_init(proto_tag, dc_idx)
         ctx = _build_crypto_ctx(client_dec_prekey_iv, secret, relay_init)
 
-        dc_key = f'{dc}{"m" if is_media else ""}'
+        dc_key = f'{dc}{"t" if is_test_dc else ""}{"m" if is_media else ""}'
         media_tag = " media" if is_media else ""
         now = time.monotonic()
+        ws_path = WS_PATH_TEST if is_test_dc else WS_PATH
         target = proxy_config.dc_redirects.get(dc)
         is_any_cf_fallback = proxy_config.fallback_cfproxy or proxy_config.cfproxy_worker_domains
+        domains = ws_domains(dc, is_media)
+        ws = None
 
         # Fallback if DC not in config, if WS blacklisted for this DC/is_media or if connect to ip is timed out
-        if (dc not in proxy_config.dc_redirects 
+        if (dc not in proxy_config.dc_redirects
             or dc_key in ws_blacklist
             or now < ip_fail_until.get(target, 0) and is_any_cf_fallback):
 
@@ -313,62 +317,53 @@ async def _handle_client(reader, writer, secret: bytes):
                 log.info("[%s] DC%d%s WS blacklisted -> fallback",
                          label, dc, media_tag)
             else:
-                log.info("[%s] DC%d%s WS connect to %s was timed out -> fallback",
-                         label, dc, media_tag, target)
-            splitter = None
-            try:
-                splitter = MsgSplitter(relay_init, proto_int)
-            except Exception:
-                pass
-            ok = await do_fallback(
-                clt_reader, clt_writer, relay_init, label,
-                dc, is_media, media_tag,
-                ctx, splitter=splitter)
-            if not ok:
-                log.warning("[%s] DC%d%s no fallback available",
-                            label, dc, media_tag)
-            return
+                # Try to get WS from pool first, might be accidental timeout
+                ws = await ws_pool.get(
+                    dc, is_media, target, domains
+                ) if not is_test_dc else None
+
+                if not ws:
+                    log.info("[%s] DC%d%s WS connect to %s was timed out -> fallback",
+                            label, dc, media_tag, target)
+                else:
+                    log.info("[%s] DC%d%s WS connect to %s was timed out, but pool hit -> using WS",
+                            label, dc, media_tag, target)
+
+            if not ws:
+                splitter = None
+                try:
+                    splitter = MsgSplitter(relay_init, proto_int)
+                except Exception:
+                    pass
+                ok = await do_fallback(
+                    clt_reader, clt_writer, relay_init, label,
+                    dc, is_test_dc, is_media, media_tag,
+                    ctx, splitter=splitter)
+                if not ok:
+                    log.warning("[%s] DC%d%s no fallback available",
+                                label, dc, media_tag)
+                return
 
         ws_timeout = WS_FAIL_TIMEOUT if now < dc_fail_until.get(dc_key, 0) else 5.0
-        fronting_active = now < fronting_until
-
-        domains = ws_domains(dc, is_media)
-        ws = None
         ws_failed_redirect = False
         ws_timed_out = False
         all_redirects = True
 
-        ws = await ws_pool.get(dc, is_media, target, domains)
+        ws = ws or await ws_pool.get(
+            dc, is_media, target, domains
+        ) if not is_test_dc else None
         if ws:
             log.info("[%s] DC%d%s -> pool hit via %s",
                      label, dc, media_tag, target)
-        elif fronting_active:
-            # TODO: Move fronting logic into bridge.py where other fallbacks are handled
-            log.info("[%s] DC%d%s -> fronting / Host %s",
-                     label, dc, media_tag, domains[0])
-            try:
-                ws = await RawWebSocket.connect(target, domains[0],
-                                                timeout=5.0,
-                                                sni="sprinthost.ru")
-            except Exception as exc:
-                stats.ws_errors += 1
-                log.warning("[%s] DC%d%s fronting failed: %s",
-                            label, dc, media_tag, repr(exc))
-            if ws:
-                stats.connections_fronting += 1
-                fronting_until = now + FRONTING_COOLDOWN
-                ws_pool.fronting_until = fronting_until
-            else:
-                fronting_until = 0.0
-                ws_pool.fronting_until = 0.0
         else:
             for domain in domains:
-                url = f'wss://{domain}/apiws'
+                url = f'wss://{domain}{ws_path}'
                 log.info("[%s] DC%d%s -> %s via %s",
                          label, dc, media_tag, url, target)
                 try:
                     ws = await RawWebSocket.connect(target, domain,
-                                                    timeout=ws_timeout)
+                                                    timeout=ws_timeout,
+                                                    path=ws_path)
                     all_redirects = False
                     break
                 except WsHandshakeError as exc:
@@ -396,31 +391,12 @@ async def _handle_client(reader, writer, secret: bytes):
                     log.warning("[%s] DC%d%s WS connect failed: %s",
                                 label, dc, media_tag, repr(exc))
 
-        # Fronting fallback if WS timed out
-        # TODO: Move fronting logic into bridge.py where other fallbacks are handled
-        # and don't forget about WsPool fronting fallback
-        if ws is None and ws_timed_out and not fronting_active:
-            log.info("[%s] DC%d%s -> fronting fallback (Host %s)",
-                     label, dc, media_tag, domains[0])
-            try:
-                ws = await RawWebSocket.connect(target, domains[0],
-                                                timeout=5.0,
-                                                sni="sprinthost.ru")
-            except Exception as exc:
-                stats.ws_errors += 1
-                log.warning("[%s] DC%d%s fronting failed: %s",
-                            label, dc, media_tag, repr(exc))
-            if ws:
-                fronting_until = now + FRONTING_COOLDOWN
-                ws_pool.fronting_until = now + FRONTING_COOLDOWN
-                stats.connections_fronting += 1
-                log.info("[%s] DC%d%s fronting OK for %ds",
-                         label, dc, media_tag, int(FRONTING_COOLDOWN))
-
         # WS failed -> fallback
         if ws is None:
             if ws_timed_out:
                 ip_fail_until[target] = now + IP_FAIL_COOLDOWN
+                log.info("[%s] DC%d%s WS connect to %s timed out, cooldown for %ds",
+                         label, dc, media_tag, target, int(IP_FAIL_COOLDOWN))
 
             if ws_failed_redirect and all_redirects:
                 ws_blacklist.add(dc_key)
@@ -430,7 +406,7 @@ async def _handle_client(reader, writer, secret: bytes):
                 dc_fail_until[dc_key] = now + DC_FAIL_COOLDOWN
             else:
                 dc_fail_until[dc_key] = now + DC_FAIL_COOLDOWN
-                log.info("[%s] DC%d%s WS cooldown for %ds",
+                log.info("[%s] DC%d%s WS failed for %ds",
                          label, dc, media_tag, int(DC_FAIL_COOLDOWN))
 
             splitter_fb = None
@@ -440,15 +416,15 @@ async def _handle_client(reader, writer, secret: bytes):
                 pass
             ok = await do_fallback(
                 clt_reader, clt_writer, relay_init, label,
-                dc, is_media, media_tag,
+                dc, is_test_dc, is_media, media_tag,
                 ctx, splitter=splitter_fb)
             if ok:
                 log.info("[%s] DC%d%s fallback closed",
                          label, dc, media_tag)
             return
 
-        dc_fail_until.pop(dc_key, None)
         ip_fail_until.pop(target, None)
+        ws_pool.report_success(dc, is_media)
         stats.connections_ws += 1
 
         splitter = None
@@ -495,7 +471,7 @@ _client_tasks: Set[asyncio.Task] = set()
 
 
 async def _run(stop_event: Optional[asyncio.Event] = None):
-    global _server_instance, _server_stop_event, fronting_until
+    global _server_instance, _server_stop_event
     _server_stop_event = stop_event
 
     ws_pool.reset()
@@ -504,14 +480,12 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
     dc_fail_until.clear()
     ip_fail_until.clear()
     _client_tasks.clear()
-    fronting_until = 0.0
 
-    if proxy_config.fallback_cfproxy:
-        user = proxy_config.cfproxy_user_domains
-        if user:
-            balancer.update_domains_list(user)
-        else:
-            start_cfproxy_domain_refresh()
+    user_cf_domains = proxy_config.cfproxy_user_domains
+    if user_cf_domains:
+        balancer.update_domains_list(user_cf_domains)
+    else:
+        start_cfproxy_domain_refresh()
 
     secret_bytes = bytes.fromhex(proxy_config.secret)
 
@@ -552,7 +526,7 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
         ip = proxy_config.dc_redirects.get(dc)
         log.info("    DC%d: %s", dc, ip)
     if proxy_config.fallback_cfproxy:
-        user_domain = "user" if proxy_config.cfproxy_user_domains else "auto"
+        user_domain = ", ".join(proxy_config.cfproxy_user_domains) if proxy_config.cfproxy_user_domains else "auto"
         log.info("  CF proxy:      enabled (%s)", user_domain)
     if proxy_config.cfproxy_worker_domains:
         log.info("  CF worker:     enabled (%s)",
@@ -703,6 +677,11 @@ def main():
                     metavar='DOMAIN',
                     help='Enable Fake TLS (ee-secret) masking with the given '
                          'SNI domain, e.g. example.com')
+    ap.add_argument('--force-test-dc', action='store_true',
+                    help='Force ALL traffic to Telegram TEST datacenters. '
+                         'Not needed for Telegram Desktop (test DCs 10001+ '
+                         'are detected automatically); use for clients that '
+                         'signal test DCs as plain 1-3')
     ap.add_argument('--proxy-protocol', action='store_true',
                     help='Accept PROXY protocol v1 header '
                          '(for use behind nginx/haproxy with proxy_protocol on)')
@@ -742,6 +721,7 @@ def main():
     proxy_config.cfproxy_worker_domains = coerce_domain_list(args.cfproxy_worker_domain)
     proxy_config.fake_tls_domain = args.fake_tls_domain.strip()
     proxy_config.proxy_protocol = args.proxy_protocol
+    proxy_config.force_test_dc = args.force_test_dc
 
     log_level = logging.DEBUG if args.verbose else logging.INFO
     log_fmt = logging.Formatter('%(asctime)s  %(levelname)-5s  %(message)s',

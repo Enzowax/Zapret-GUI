@@ -1,0 +1,5 @@
+# Keep upstream bytes intact for SHA-256 verification on every platform.
+bin/* -text
+bin/LICENSE.txt -whitespace
+lists/*.txt -text whitespace=cr-at-eol
+tgproxy/*.py -text

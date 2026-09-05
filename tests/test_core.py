@@ -108,16 +108,6 @@ def test_result_is_better_by_coverage_then_latency():
 
 
 # --- аргументы службы (экранирование) ------------------------------------ #
-def test_quote_for_service_escapes_spaces_and_colons():
-    # значение с пробелом/двоеточием -> в экранированных кавычках \"
-    assert zc.quote_for_service('--wf-l3=ipv4') == '--wf-l3=ipv4'      # без спец — как есть
-    assert zc.quote_for_service('--hostlist=C:\\a b.txt') == '--hostlist=\\"C:\\a b.txt\\"'
-    assert zc.quote_for_service('--new') == '--new'
-    assert zc.quote_for_service('plain') == 'plain'
-    assert zc.quote_for_service('has space') == '\\"has space\\"'
-
-
-# --- игровой фильтр / id пресета ----------------------------------------- #
 def test_game_filter_values():
     assert zc.game_filter_values("off") == ("12", "12")
     assert zc.game_filter_values("all") == ("1024-65535", "1024-65535")

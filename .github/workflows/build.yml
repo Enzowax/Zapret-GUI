@@ -3,8 +3,10 @@ name: Build and Release
 # Сборка ZapretControl.zip и публикация релиза при пуше тега vX.Y.Z
 on:
   push:
+    branches: [main]
     tags:
       - 'v*'
+  pull_request:
   workflow_dispatch:        # ручной запуск (сборка без релиза)
 
 permissions:
@@ -22,14 +24,18 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install test deps
-        run: pip install pytest ruff cryptography
+        run: python -m pip install -r requirements-build.txt
       - name: Lint (реальные баги, не стиль)
-        run: ruff check --select=E9,F63,F7,F82 zapret_core.py zapret_app.pyw tgproxy/ tests/
+        run: python -m ruff check --select=E9,F63,F7,F82 zapret_core.py zapret_app.pyw tgproxy/ tests/ utils/preview_ui.py
       - name: Unit tests
-        run: pytest tests/ -q
+        run: python -m pytest tests/ -q
+      - name: Check release version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: python -c "import os, zapret_core; assert os.environ['GITHUB_REF_NAME'] == 'v' + zapret_core.APP_VERSION, 'Tag and APP_VERSION differ'"
 
   build:
     needs: test            # сборка только если тесты прошли
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -43,19 +49,24 @@ jobs:
       - name: Install dependencies
         # cryptography обязателен: его использует встроенный TG-прокси (tgproxy/_aes.py);
         # без него на Windows прокси не запускается (fallback рассчитан на libcrypto.so)
-        run: pip install customtkinter==5.2.2 pyinstaller pystray pillow darkdetect cryptography
+        run: python -m pip install -r requirements-build.txt
 
       - name: Build (onedir)
-        run: pyinstaller --noconfirm --distpath dist --workpath build ZapretControl.spec
+        run: python -m PyInstaller --noconfirm --distpath dist --workpath build ZapretControl.spec
 
       - name: Package ZIP
-        run: Compress-Archive -Path dist/ZapretControl -DestinationPath ZapretControl.zip -Force
+        run: |
+          Compress-Archive -Path dist/ZapretControl -DestinationPath ZapretControl.zip -Force
+          $hash = (Get-FileHash ZapretControl.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  ZapretControl.zip" | Set-Content ZapretControl.zip.sha256 -Encoding ascii
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ZapretControl
-          path: ZapretControl.zip
+          path: |
+            ZapretControl.zip
+            ZapretControl.zip.sha256
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -63,4 +74,6 @@ jobs:
         with:
           name: Zapret GUI ${{ github.ref_name }}
           generate_release_notes: true
-          files: ZapretControl.zip
+          files: |
+            ZapretControl.zip
+            ZapretControl.zip.sha256

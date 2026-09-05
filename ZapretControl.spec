@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 PyInstaller spec: самодостаточный ZapretControl.exe.
-Внутрь зашиваются bin/, lists/, нужные utils, presets.json, пресеты *.bat и TgWsProxy.
+Внутрь зашиваются bin/, lists/, presets.json и встроенный пакет tgproxy.
 При первом запуске exe разворачивает их рядом с собой (zapret_core.ensure_runtime)
 и сверяет целостность бинарников (zapret_core.verify_runtime).
 
@@ -26,10 +26,9 @@ for folder in ("bin", "lists"):
         if os.path.isfile(f):
             datas.append((f, os.path.relpath(os.path.dirname(f), ROOT)))
 
-for name in ("test zapret.ps1", "targets.txt"):
-    p = os.path.join(ROOT, "utils", name)
-    if os.path.exists(p):
-        datas.append((p, "utils"))
+for name in ("LICENSE", "upstream-versions.json"):
+    datas.append((os.path.join(ROOT, name), "."))
+datas.append((os.path.join(ROOT, "tgproxy", "LICENSE"), "licenses/tgproxy"))
 
 # декларативные пресеты (единственный источник стратегий)
 if os.path.exists(os.path.join(ROOT, "presets.json")):
@@ -63,11 +62,7 @@ a = Analysis(
     hiddenimports=(ctk_hidden + pil_hidden + pystray_hidden + crypto_hidden
                    + ["darkdetect", "zapret_core",
                       "cryptography.hazmat.primitives.ciphers"]
-                   + collect_submodules("tgproxy")
-                   + ["tgproxy", "tgproxy.tg_ws_proxy", "tgproxy.config",
-                      "tgproxy.bridge", "tgproxy.raw_websocket", "tgproxy.pool",
-                      "tgproxy.balancer", "tgproxy.fake_tls", "tgproxy.stats",
-                      "tgproxy.utils", "tgproxy._aes"]),
+                   + collect_submodules("tgproxy")),
     hookspath=[], runtime_hooks=[], excludes=[], noarchive=False,
 )
 pyz = PYZ(a.pure)

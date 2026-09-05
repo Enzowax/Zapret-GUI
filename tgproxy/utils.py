@@ -1,6 +1,9 @@
 import socket as _socket
 import urllib.request
 import http.client
+import ssl
+
+import certifi
 
 from typing import Optional, Dict, List
 from urllib.request import Request
@@ -43,13 +46,22 @@ DC_DEFAULT_IPS: Dict[int, str] = {
     203: '91.105.192.100'
 }
 
+DC_TEST_IPS: Dict[int, str] = {
+    1: '149.154.175.10',
+    2: '149.154.167.40',
+    3: '149.154.175.117',
+}
+
+WS_PATH = '/apiws'
+WS_PATH_TEST = WS_PATH + '_test'
+
 
 def ws_domains(dc: int, is_media) -> List[str]:
     if dc == 203:
         dc = 2
-    if is_media is None or is_media:
-        return [f'kws{dc}-1.web.telegram.org', f'kws{dc}.web.telegram.org']
-    return [f'kws{dc}.web.telegram.org', f'kws{dc}-1.web.telegram.org']
+    if not is_media:
+        return [f'kws{dc}.web.telegram.org', f'kws{dc}-1.web.telegram.org']
+    return [f'kws{dc}-1.web.telegram.org', f'kws{dc}.web.telegram.org']
 
 
 def human_bytes(n: int) -> str:
@@ -95,10 +107,11 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
                 )
 
         try:
-            return self.do_open(_Conn, req)
+            return self.do_open(_Conn, req, context=self._context)
         except Exception:
             return super().https_open(req)
 
 
 def build_github_opener() -> urllib.request.OpenerDirector:
-    return urllib.request.build_opener(_PinnedHTTPSHandler())
+    context = ssl.create_default_context(cafile=certifi.where())
+    return urllib.request.build_opener(_PinnedHTTPSHandler(context=context))

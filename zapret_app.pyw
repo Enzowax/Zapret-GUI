@@ -30,35 +30,27 @@ except Exception:
     _TRAY_OK = False
 
 
-ctk.set_appearance_mode("dark")
+ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
 
-# Палитра как пары (светлая, тёмная) — CustomTkinter сам выбирает по режиму.
-# Тёмная — прохладная чернильная (её не трогаем, она удачная). Светлая
-# ПРИГЛУШЕНА: не бьёт белизной. Карты — мягкий серый (НЕ белый), поля ещё
-# темнее (утоплены). За счёт этого белый бегунок тумблера и контент не
-# сливаются с фоном (раньше всё было почти белым и терялось).
-WIN_BG = ("#e8ebf1", "#0f1218")        # фон окна — приглушённый светлый / тёмный чернильный
-SIDEBAR_BG = ("#dde2eb", "#0a0c11")    # сайдбар — чуть глубже фона, отступает назад
-CARD_BG = ("#d9dfe9", "#171b23")       # карта — мягкий серый, НЕ белый (не бьёт яркостью)
-CARD_HOVER = ("#d0d7e3", "#1f242e")
-BTN_HOVER = ("#c6cfdc", "#2a303c")     # ховер неакцентной кнопки
-BORDER = ("#bfc9d7", "#262c38")        # чёткая рамка — карта отделяется от фона
-SWITCH_OFF = ("#6f7a90", "#3a4150")    # дорожка выкл. тумблера — ТЁМНАЯ, белый бегунок виден
-SWITCH_KNOB = ("#ffffff", "#eaeef4")   # бегунок тумблера
-SWITCH_KNOB_HOVER = ("#eef1f6", "#d4dae4")  # ховер бегунка
-SWITCH_BORDER = ("#586377", "#4a5263") # обводка тумблера
-FIELD_BG = ("#cfd6e2", "#1f242e")      # поля/списки — темнее карты (утоплены)
-LOG_BG = ("#cfd6e2", "#0c0f15")        # текстовые поля (журнал, свои сайты)
-LOG_FG = ("#242c3a", "#cdd3dd")
-TEXT = ("#1b2330", "#eef1f6")
-MUTED = ("#586173", "#828b99")
-
-# Кнопка-стрелка выпадающего списка: в СВЕТЛОЙ теме — нейтральный серый (тёмная
-# стрелка на нём читается чётко; на акцентно-синей кнопке она выглядела «сломанной»),
-# в ТЁМНОЙ — акцент (подставляется в _menu как ACCENT/ACCENT_HOVER).
-MENU_BTN_LIGHT = "#c2ccd9"
-MENU_BTN_HOVER_LIGHT = "#b4bfce"
+# Поверхности и границы в духе Windows 11; пары (светлая, тёмная).
+WIN_BG = ("#f3f3f3", "#202020")
+SIDEBAR_BG = ("#eeeeee", "#191919")
+CARD_BG = ("#ffffff", "#2b2b2b")
+CARD_HOVER = ("#f5f5f5", "#333333")
+BTN_HOVER = ("#eaeaea", "#3b3b3b")
+BORDER = ("#e5e5e5", "#383838")
+SWITCH_OFF = ("#8a8a8a", "#646464")
+SWITCH_KNOB = ("#ffffff", "#ffffff")
+SWITCH_KNOB_HOVER = ("#f5f5f5", "#eeeeee")
+SWITCH_BORDER = ("#8a8a8a", "#646464")
+FIELD_BG = ("#fafafa", "#242424")
+LOG_BG = ("#ffffff", "#242424")
+LOG_FG = ("#252525", "#ededed")
+TEXT = ("#202020", "#f5f5f5")
+MUTED = ("#626262", "#b4b4b4")
+MENU_BTN_LIGHT = "#f0f0f0"
+MENU_BTN_HOVER_LIGHT = "#e6e6e6"
 
 ON_ACCENT = "#ffffff"                  # текст/иконки поверх акцентной заливки
 ACCENT = "#0e7c75"                     # текущий акцент (для активного режима)
@@ -74,7 +66,7 @@ SEG_SEL_HOVER = "#8accc4"
 #            (светлая: basic, hover)      (тёмная: basic, hover — как было)
 THEMES = {
     "Сигнальная": (("#0f766e", "#0c5f58"), ("#0e7c75", "#0b645e")),
-    "Синяя":      (("#2563eb", "#1d4ed8"), ("#2f6fe0", "#2560c6")),
+    "Синяя":      (("#005fb8", "#00549f"), ("#005fb8", "#006acb")),
     "Индиго":     (("#4f46e5", "#4338ca"), ("#5a5cf0", "#4a4cdb")),
     "Зелёная":    (("#15803d", "#166534"), ("#1f9e57", "#1a8849")),
     "Янтарная":   (("#b45309", "#92400e"), ("#c98a14", "#b0780f")),
@@ -82,9 +74,9 @@ THEMES = {
 }
 APPEARANCE = {"Тёмная": "dark", "Светлая": "light", "Системная": "system"}
 
-GREEN = "#1faf63"
-RED = "#e0575b"
-YELLOW = "#d2901a"
+GREEN = ("#107c10", "#6ccb5f")
+RED = ("#c42b1c", "#ff99a4")
+YELLOW = ("#8a5200", "#fce100")
 FONT = "Segoe UI"
 FONT_DISPLAY = "Segoe UI Semibold"     # заголовки/секции — характерный вес
 FONT_MONO = "Consolas"                 # данные/журнал
@@ -132,7 +124,7 @@ class ZapretApp(ctk.CTk):
         super().__init__(fg_color=WIN_BG)
         self.autostart_launch = autostart
         self.title(f"{APP_NAME} — обход Discord, YouTube, Telegram")
-        self.geometry("1020x700")
+        self.geometry("1120x780")
         self.minsize(920, 620)
         try:
             self.iconbitmap(self._asset("icon.ico"))
@@ -146,8 +138,8 @@ class ZapretApp(ctk.CTk):
         if "ui_mode" not in self.cfg and not self.cfg.get("first_run_done"):
             self.cfg["ui_mode"] = "simple"
         # оформление — задать режим (тёмная/светлая) и акцент до построения UI
-        ctk.set_appearance_mode(self.cfg.get("appearance", "dark"))
-        _apply_accent(self.cfg.get("accent_name", "Сигнальная"))
+        ctk.set_appearance_mode(self.cfg.get("appearance", "light"))
+        _apply_accent(self.cfg.get("accent_name", "Синяя"))
         self.presets = zc.load_presets()
         self.preset_by_name = {p["name"]: p for p in self.presets}
         self.proc = None
@@ -233,7 +225,7 @@ class ZapretApp(ctk.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        side = ctk.CTkFrame(self, width=212, corner_radius=0, fg_color=SIDEBAR_BG)
+        side = ctk.CTkFrame(self, width=204, corner_radius=0, fg_color=SIDEBAR_BG)
         side.grid(row=0, column=0, sticky="nsew")
         side.grid_propagate(False)
         self._sidebar = side
@@ -250,18 +242,18 @@ class ZapretApp(ctk.CTk):
                          text_color=ACCENT).pack(side="left")
         ttl = ctk.CTkFrame(head, fg_color="transparent")
         ttl.pack(side="left", padx=(10, 0))
-        ctk.CTkLabel(ttl, text="Zapret GUI", font=(FONT_DISPLAY, 19),
+        ctk.CTkLabel(ttl, text="Zapret GUI", font=(FONT_DISPLAY, 18),
                      text_color=TEXT, anchor="w").pack(anchor="w")
-        ctk.CTkLabel(ttl, text="by Enzowax", font=(FONT, 11),
+        ctk.CTkLabel(ttl, text="Контроль подключения", font=(FONT, 11),
                      text_color=ACCENT, anchor="w").pack(anchor="w")
 
         simple = self._simple_mode()
-        nav = ([("control", "🏠   Главная"), ("sites", "➕   Свои сайты"),
-                ("settings", "⚙   Настройки"), ("log", "📜   Журнал")] if simple else
-               [("control", "🛡   Управление"), ("sites", "➕   Свои сайты"),
-                ("auto", "🔍   Авто-поиск"), ("tgws", "✈   Telegram"),
-                ("diag", "🩺   Диагностика"), ("settings", "⚙   Настройки"),
-                ("log", "📜   Журнал")])
+        nav = ([("control", "Главная"), ("sites", "Свои сайты"),
+                ("settings", "Настройки"), ("log", "Журнал")] if simple else
+               [("control", "Главная"), ("sites", "Свои сайты"),
+                ("auto", "Авто-поиск"), ("tgws", "Telegram"),
+                ("diag", "Диагностика"), ("settings", "Настройки"),
+                ("log", "Журнал")])
         for key, label in nav:
             row = ctk.CTkFrame(side, fg_color="transparent")
             row.pack(fill="x", padx=8, pady=2)
@@ -328,7 +320,7 @@ class ZapretApp(ctk.CTk):
         self.pages[key].grid(row=0, column=0, sticky="nsew")
         for k, (b, bar) in self.nav_buttons.items():
             active = (k == key)
-            b.configure(fg_color=CARD_HOVER if active else "transparent",
+            b.configure(fg_color=CARD_BG if active else "transparent",
                         text_color=ACCENT if active else TEXT)
             bar.configure(fg_color=ACCENT if active else "transparent")
         if key == "diag" and not getattr(self, "_diag_loaded", False):
@@ -349,16 +341,12 @@ class ZapretApp(ctk.CTk):
                 fill="x", padx=16, pady=(0, 10))
 
     def _section(self, parent, text):
-        # эйбрау-метка секции: акцентная риска + капс
-        row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", padx=16, pady=(20, 6))
-        ctk.CTkFrame(row, width=14, height=2, corner_radius=1,
-                     fg_color=ACCENT).pack(side="left", pady=(1, 0))
-        ctk.CTkLabel(row, text="  " + text.upper(), font=(FONT_DISPLAY, 11),
-                     text_color=MUTED, anchor="w").pack(side="left")
+        ctk.CTkLabel(parent, text=text, font=(FONT_DISPLAY, 13),
+                     text_color=MUTED, anchor="w").pack(
+            fill="x", padx=20, pady=(22, 7))
 
     def _card(self, parent):
-        f = ctk.CTkFrame(parent, corner_radius=14, fg_color=CARD_BG,
+        f = ctk.CTkFrame(parent, corner_radius=8, fg_color=CARD_BG,
                          border_width=1, border_color=BORDER)
         f.pack(fill="x", padx=14, pady=5)
         f.grid_columnconfigure(1, weight=1)
@@ -366,18 +354,25 @@ class ZapretApp(ctk.CTk):
 
     def _card_row(self, parent, icon, title, subtitle):
         f = self._card(parent)
-        ctk.CTkLabel(f, text=icon, font=(FONT, 22)).grid(
-            row=0, column=0, rowspan=2, padx=(16, 12), pady=14)
-        ctk.CTkLabel(f, text=title, font=(FONT_DISPLAY, 14), text_color=TEXT,
-                     anchor="w").grid(row=0, column=1, sticky="sw", pady=(14, 0))
-        ctk.CTkLabel(f, text=subtitle, font=(FONT, 11), text_color=MUTED,
-                     anchor="w").grid(row=1, column=1, sticky="nw", pady=(0, 14))
+        f.grid_columnconfigure(1, weight=1, minsize=140)
+        heading = ctk.CTkLabel(f, text=title, font=(FONT_DISPLAY, 14),
+                               text_color=TEXT, anchor="w", justify="left", wraplength=240)
+        heading.grid(row=0, column=1, sticky="sw", padx=(20, 16), pady=(18, 4))
+        detail = ctk.CTkLabel(f, text=subtitle, font=(FONT, 12), text_color=MUTED,
+                              anchor="w", justify="left", wraplength=240)
+        detail.grid(row=1, column=1, sticky="nw", padx=(20, 16), pady=(0, 18))
+        def resize(event):
+            width = max(100, f.grid_bbox(1, 0)[2] - 36)
+            heading.configure(wraplength=width)
+            detail.configure(wraplength=width)
+        f.bind("<Configure>", resize)
         return f
 
     def _btn(self, parent, text, command, accent=False, width=150):
         return ctk.CTkButton(
             parent, text=text, command=command, width=width, height=36,
-            corner_radius=8, font=(FONT, 13),
+            corner_radius=6, font=(FONT, 13),
+            border_width=0 if accent else 1, border_color=BORDER,
             fg_color=ACCENT if accent else CARD_HOVER,
             hover_color=ACCENT_HOVER if accent else BTN_HOVER,
             text_color="#ffffff" if accent else TEXT)
@@ -397,7 +392,7 @@ class ZapretApp(ctk.CTk):
         def toggle():
             val = bool(sw.get())
             self.cfg[key] = val
-            zc.save_config(self.cfg)
+            zc.update_config({key: self.cfg[key]})
             if on_msg or off_msg:
                 self.log_msg(on_msg if val else off_msg)
 
@@ -491,72 +486,55 @@ class ZapretApp(ctk.CTk):
         return names
 
     def _build_dashboard(self, p, big=False):
-        """Плитка-дашборд: статус + Старт/Стоп + здоровье сервисов.
-        big=True — крупные кнопки для простого режима."""
-        card = ctk.CTkFrame(p, corner_radius=14, fg_color=CARD_BG,
-                            border_width=1, border_color=BORDER)
-        card.pack(fill="x", padx=14, pady=5)
-        # акцентная риска сверху — «живой сигнал»
-        ctk.CTkFrame(card, height=3, corner_radius=2, fg_color=ACCENT).pack(
-            fill="x", padx=24, pady=(10, 0))
-
+        card = self._card(p)
+        card.grid_columnconfigure(0, weight=1)
+        card.grid_columnconfigure(1, weight=0)
         top = ctk.CTkFrame(card, fg_color="transparent")
-        top.pack(fill="x", padx=4, pady=(2, 0))
+        top.grid(row=0, column=0, sticky="ew", padx=24, pady=(24, 20))
         top.grid_columnconfigure(1, weight=1)
-        self.ctl_dot = ctk.CTkLabel(top, text="●", font=(FONT, 34 if big else 30),
-                                    text_color=MUTED)
-        self.ctl_dot.grid(row=0, column=0, rowspan=2, padx=(20, 14), pady=16)
-        self.ctl_status_title = ctk.CTkLabel(top, text="Проверка…",
-                                             font=(FONT_DISPLAY, 22 if big else 20),
-                                             text_color=TEXT, anchor="w")
-        self.ctl_status_title.grid(row=0, column=1, sticky="sw", pady=(16, 0))
+        self.ctl_dot = ctk.CTkLabel(top, text="●", width=48, height=48,
+                                    corner_radius=12, fg_color=FIELD_BG,
+                                    font=(FONT, 26), text_color=MUTED)
+        self.ctl_dot.grid(row=0, column=0, rowspan=2, padx=(0, 16))
+        self.ctl_status_title = ctk.CTkLabel(top, text="Проверка подключения…",
+                                             font=(FONT_DISPLAY, 24), text_color=TEXT,
+                                             anchor="w")
+        self.ctl_status_title.grid(row=0, column=1, sticky="w")
         self.ctl_status_sub = ctk.CTkLabel(top, text="", font=(FONT, 12),
-                                           text_color=MUTED, anchor="w")
-        self.ctl_status_sub.grid(row=1, column=1, sticky="nw", pady=(0, 16))
-        btns = ctk.CTkFrame(top, fg_color="transparent")
-        btns.grid(row=0, column=2, rowspan=2, padx=16, pady=12)
-        if big:
-            self.btn_start = ctk.CTkButton(
-                btns, text="▶  Запустить", command=self.on_start, width=180,
-                height=46, corner_radius=10, font=(FONT_DISPLAY, 15),
-                fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color=ON_ACCENT)
-            self.btn_stop = ctk.CTkButton(
-                btns, text="■  Остановить", command=self.on_stop, width=150,
-                height=46, corner_radius=10, font=(FONT, 14),
-                fg_color=CARD_HOVER, hover_color=BTN_HOVER, text_color=TEXT)
-        else:
-            self.btn_start = self._btn(btns, "▶  Запустить", self.on_start,
-                                       accent=True, width=150)
-            self.btn_stop = self._btn(btns, "■  Остановить", self.on_stop, width=150)
-        self.btn_start.pack(side="left", padx=4)
-        self.btn_stop.pack(side="left", padx=4)
-
-        ctk.CTkFrame(card, height=1, fg_color=BORDER).pack(
-            fill="x", padx=18, pady=(2, 0))
-
-        hb = ctk.CTkFrame(card, fg_color="transparent")
-        hb.pack(fill="x", padx=18, pady=12)
+                                           text_color=MUTED, anchor="w", justify="left",
+                                           wraplength=500)
+        self.ctl_status_sub.grid(row=1, column=1, sticky="w", pady=(5, 0))
+        actions = ctk.CTkFrame(card, fg_color="transparent")
+        actions.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 24))
+        self.btn_start = self._btn(actions, "Запустить обход", self.on_start,
+                                   accent=True, width=180)
+        self.btn_start.configure(height=42)
+        self.btn_start.pack(side="left")
+        self.btn_stop = self._btn(actions, "Остановить", self.on_stop, width=130)
+        self.btn_stop.configure(height=42)
+        self.btn_stop.pack(side="left", padx=10)
+        self._btn(actions, "Проверить связь", self.on_health_check, width=140).pack(side="right")
+        ctk.CTkFrame(card, height=1, fg_color=BORDER).grid(row=2, column=0, sticky="ew")
+        health = ctk.CTkFrame(card, fg_color="transparent")
+        health.grid(row=3, column=0, sticky="ew", padx=16, pady=16)
+        health.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="health")
         self.health_widgets = {}
-        for key, label in [("discord", "Discord"), ("youtube", "YouTube"),
-                           ("google", "Google")]:
-            cell = ctk.CTkFrame(hb, fg_color="transparent")
-            cell.pack(side="left", padx=(0, 20))
-            dot = ctk.CTkLabel(cell, text="●", font=(FONT, 16), text_color=MUTED)
-            dot.pack(side="left", padx=(0, 6))
-            txt = ctk.CTkLabel(cell, text=f"{label}: …", font=(FONT, 13), text_color=TEXT)
-            txt.pack(side="left")
-            self.health_widgets[key] = (dot, txt, label)
-        # индикатор Telegram-прокси (обновляется в _apply_status)
-        pcell = ctk.CTkFrame(hb, fg_color="transparent")
-        pcell.pack(side="left", padx=(0, 20))
-        self.dash_proxy_dot = ctk.CTkLabel(pcell, text="●", font=(FONT, 16),
-                                           text_color=MUTED)
-        self.dash_proxy_dot.pack(side="left", padx=(0, 6))
-        self.dash_proxy_lbl = ctk.CTkLabel(pcell, text="Telegram: …", font=(FONT, 13),
-                                           text_color=TEXT)
-        self.dash_proxy_lbl.pack(side="left")
-        self._btn(hb, "Проверить", self.on_health_check, width=110).pack(
-            side="right", padx=2)
+        for col, (key, label) in enumerate((("discord", "Discord"), ("youtube", "YouTube"),
+                                             ("google", "Google"), ("telegram", "Telegram"))):
+            cell = ctk.CTkFrame(health, fg_color=FIELD_BG, corner_radius=8)
+            cell.grid(row=0, column=col, sticky="nsew", padx=4)
+            ctk.CTkLabel(cell, text=label, font=(FONT, 12), text_color=MUTED,
+                         anchor="w").pack(fill="x", padx=12, pady=(10, 2))
+            values = ctk.CTkFrame(cell, fg_color="transparent")
+            values.pack(fill="x", padx=12, pady=(0, 10))
+            dot = ctk.CTkLabel(values, text="●", font=(FONT, 12), width=14, text_color=MUTED)
+            dot.pack(side="left", padx=(0, 5))
+            value = ctk.CTkLabel(values, text="Проверка…", font=(FONT_DISPLAY, 13), text_color=TEXT)
+            value.pack(side="left")
+            if key == "telegram":
+                self.dash_proxy_dot, self.dash_proxy_lbl = dot, value
+            else:
+                self.health_widgets[key] = (dot, value, label)
 
     def _add_games_excl_card(self, parent):
         """Карточка «Не трогать Steam / Dota 2» с тумблером (общая для полной
@@ -601,47 +579,42 @@ class ZapretApp(ctk.CTk):
     # -- страница: Главная (простой режим) --------------------------------- #
     def _build_simple_page(self):
         p = self._page()
-        self._title(p, "Zapret — обход блокировок",
-                    "Нажмите «Запустить», и Discord, YouTube и другие сайты "
-                    "заработают. Свои сайты и оформление — в меню слева. Тонкая "
-                    "настройка — в полном режиме (переключатель внизу слева).")
+        self._title(p, "Главная", "Подключение, доступность сервисов и быстрые действия.")
         self._init_strategy_var()
-
-        self._section(p, "Состояние")
         self._build_dashboard(p, big=True)
-
-        self._section(p, "Telegram")
-        c = self._card_row(p, "✈", "Прокси для Telegram",
-                           "Если Telegram не грузит фото и видео — включите прокси: "
-                           "кнопка сама добавит его в Telegram, останется подтвердить")
-        box = ctk.CTkFrame(c, fg_color="transparent")
-        box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
-        self._btn(box, "Включить в Telegram", self.on_tg_open, accent=True,
-                  width=190).pack(side="left", padx=4)
-        self._btn(box, "Скопировать ссылку", self.on_tg_copy, width=170).pack(
-            side="left", padx=4)
-
-        self._section(p, "Если что-то не работает")
-        c = self._card_row(p, "🪄", "Подобрать настройку автоматически",
-                           "Программа проверит стратегии обхода, выберет рабочую "
-                           "и сразу включит её (займёт пару минут)")
-        box = ctk.CTkFrame(c, fg_color="transparent")
-        box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
-        self.simple_fix_lbl = ctk.CTkLabel(box, text="", font=(FONT, 11),
-                                           text_color=MUTED)
-        self.simple_fix_lbl.pack(side="left", padx=(0, 10))
-        self.simple_fix_btn = self._btn(box, "Подобрать и включить",
-                                        self.on_simple_fix, accent=True, width=190)
-        self.simple_fix_btn.pack(side="left", padx=4)
-
-        c = self._card_row(p, "📦", "Отчёт для поддержки",
-                           "Соберёт логи и диагностику в один файл — приложите его "
-                           "к вопросу, если нужна помощь")
-        self._btn(c, "Сохранить отчёт", self.on_support_bundle, width=160).grid(
-            row=0, column=2, rowspan=2, padx=14, pady=12)
+        self._section(p, "Быстрые действия")
+        c = self._card(p)
+        c.grid_columnconfigure(0, weight=1)
+        c.grid_columnconfigure(1, weight=0)
+        ctk.CTkLabel(c, text="Telegram", font=(FONT_DISPLAY, 17), text_color=TEXT,
+                     anchor="w").grid(row=0, column=0, sticky="w", padx=24, pady=(20, 4))
+        ctk.CTkLabel(c, text="Подключите встроенный прокси для сообщений, фото и видео.",
+                     font=(FONT, 12), text_color=MUTED, anchor="w", justify="left",
+                     wraplength=520).grid(row=1, column=0, sticky="w", padx=24)
+        actions = ctk.CTkFrame(c, fg_color="transparent")
+        actions.grid(row=2, column=0, sticky="w", padx=24, pady=(16, 20))
+        self._btn(actions, "Подключить Telegram", self.on_tg_open, accent=True,
+                  width=190).pack(side="left")
+        self._btn(actions, "Скопировать ссылку", self.on_tg_copy, width=180).pack(side="left", padx=10)
+        c = self._card(p)
+        c.grid_columnconfigure(0, weight=1)
+        c.grid_columnconfigure(1, weight=0)
+        ctk.CTkLabel(c, text="Не получается подключиться?", font=(FONT_DISPLAY, 17),
+                     text_color=TEXT, anchor="w").grid(row=0, column=0, sticky="w",
+                                                      padx=24, pady=(20, 4))
+        ctk.CTkLabel(c, text="Авто-поиск проверит стратегии и включит лучшую из найденных.",
+                     font=(FONT, 12), text_color=MUTED, anchor="w", justify="left",
+                     wraplength=520).grid(row=1, column=0, sticky="w", padx=24)
+        actions = ctk.CTkFrame(c, fg_color="transparent")
+        actions.grid(row=2, column=0, sticky="ew", padx=24, pady=(16, 20))
+        self.simple_fix_btn = self._btn(actions, "Подобрать настройку", self.on_simple_fix, width=190)
+        self.simple_fix_btn.pack(side="left")
+        self._btn(actions, "Отчёт для поддержки", self.on_support_bundle, width=180).pack(side="left", padx=10)
+        self.simple_fix_lbl = ctk.CTkLabel(c, text="", font=(FONT, 12), text_color=MUTED,
+                                          anchor="w", wraplength=520)
+        self.simple_fix_lbl.grid(row=3, column=0, sticky="w", padx=24, pady=(0, 8))
         return p
 
-    # -- страница: Настройки (простой режим) ------------------------------- #
     def _build_simple_settings_page(self):
         p = self._page()
         self._title(p, "Настройки",
@@ -652,7 +625,7 @@ class ZapretApp(ctk.CTk):
         c = self._card_row(p, "🌗", "Тема", "Тёмная / светлая / системная")
         self.appearance_var = ctk.StringVar(
             value={v: k for k, v in APPEARANCE.items()}.get(
-                self.cfg.get("appearance", "dark"), "Тёмная"))
+                self.cfg.get("appearance", "light"), "Тёмная"))
         self._seg(c, list(APPEARANCE.keys()), command=self._on_appearance_change,
                   variable=self.appearance_var).grid(
             row=0, column=2, rowspan=2, padx=14, pady=12)
@@ -660,7 +633,7 @@ class ZapretApp(ctk.CTk):
         c = self._card_row(p, "🎨", "Акцентный цвет", "Цвет кнопок и выделения")
         self.theme_var = ctk.StringVar(
             value=self.cfg.get("accent_name") if self.cfg.get("accent_name") in THEMES
-            else "Сигнальная")
+            else "Синяя")
         self._menu(c, list(THEMES.keys()), self.theme_var, self._on_theme_change).grid(
             row=0, column=2, rowspan=2, padx=14, pady=12)
 
@@ -715,7 +688,7 @@ class ZapretApp(ctk.CTk):
         if not first_run and self.cfg.get("ui_mode", "advanced") == mode:
             return
         self.cfg["ui_mode"] = mode
-        zc.save_config(self.cfg)
+        zc.update_config({"ui_mode": self.cfg["ui_mode"]})
         self._current_page = "control"
         self._rebuild_ui()
         self.log_msg("Режим интерфейса: "
@@ -957,7 +930,7 @@ class ZapretApp(ctk.CTk):
                         variable=self.fast_var, font=(FONT, 13), fg_color=ACCENT,
                         hover_color=ACCENT_HOVER, command=self._on_fast_toggle).pack(
             side="left", padx=12)
-        ctk.CTkLabel(box2, text="выкл. — проверить все 20 и собрать полный пул",
+        ctk.CTkLabel(box2, text=f"выкл. — проверить все {len(self.presets)} и собрать полный пул",
                      font=(FONT, 11), text_color=MUTED).pack(side="left", padx=14)
 
         c = self._card(p)
@@ -1014,9 +987,9 @@ class ZapretApp(ctk.CTk):
             self.tree.tag_configure("best",
                                     background=_pick(("#d8f1e2", "#173d17")),
                                     foreground=_pick(("#137a43", "#9af0bf")))
-            self.tree.tag_configure("good", foreground=GREEN)
-            self.tree.tag_configure("partial", foreground=YELLOW)
-            self.tree.tag_configure("bad", foreground=RED)
+            self.tree.tag_configure("good", foreground=_pick(GREEN))
+            self.tree.tag_configure("partial", foreground=_pick(YELLOW))
+            self.tree.tag_configure("bad", foreground=_pick(RED))
         except Exception:           # таблица могла быть пересоздана (смена акцента)
             pass
 
@@ -1286,7 +1259,7 @@ class ZapretApp(ctk.CTk):
         c = self._card_row(p, "🌗", "Тема", "Тёмная / светлая / системная")
         self.appearance_var = ctk.StringVar(
             value={v: k for k, v in APPEARANCE.items()}.get(
-                self.cfg.get("appearance", "dark"), "Тёмная"))
+                self.cfg.get("appearance", "light"), "Тёмная"))
         self._seg(c, list(APPEARANCE.keys()), command=self._on_appearance_change,
                   variable=self.appearance_var).grid(
             row=0, column=2, rowspan=2, padx=14, pady=12)
@@ -1294,7 +1267,7 @@ class ZapretApp(ctk.CTk):
         c = self._card_row(p, "🎨", "Акцентный цвет", "Цвет кнопок и выделения")
         self.theme_var = ctk.StringVar(
             value=self.cfg.get("accent_name") if self.cfg.get("accent_name") in THEMES
-            else "Сигнальная")
+            else "Синяя")
         self._menu(c, list(THEMES.keys()), self.theme_var, self._on_theme_change).grid(
             row=0, column=2, rowspan=2, padx=14, pady=12)
 
@@ -1492,7 +1465,7 @@ class ZapretApp(ctk.CTk):
         self._status_busy = False
         if running:
             self.ctl_dot.configure(text_color=GREEN)
-            self.ctl_status_title.configure(text="Zapret работает")
+            self.ctl_status_title.configure(text="Обход включён")
             sub = "Обход блокировок активен"
             # показать, какая стратегия реально работает — раньше по интерфейсу
             # этого не было видно и легко было запустить не тот пресет
@@ -1501,13 +1474,16 @@ class ZapretApp(ctk.CTk):
                 sub += f"   ·   {name}"
             self.side_status.configure(text="●  Zapret работает", text_color=GREEN)
         else:
-            self.ctl_dot.configure(text_color=RED)
-            self.ctl_status_title.configure(text="Zapret остановлен")
+            self.ctl_dot.configure(text_color=MUTED)
+            self.ctl_status_title.configure(text="Готов к подключению")
             sub = "Обход не запущен"
-            self.side_status.configure(text="●  остановлен", text_color=RED)
+            self.side_status.configure(text="●  Не подключено", text_color=MUTED)
         if installed:
             sub += f"   ·   служба: {'работает' if svc_run else 'установлена'}"
         self.ctl_status_sub.configure(text=sub)
+        busy = self.auto_running or self._stop_busy
+        self.btn_start.configure(state="disabled" if running or busy else "normal")
+        self.btn_stop.configure(state="normal" if running and not busy else "disabled")
         self._cfgw("ipset_label", text=f"IPSet: {ipset}")
         if installed:
             self._cfgw("svc_label", text="работает" if svc_run else "остановлена",
@@ -1525,7 +1501,7 @@ class ZapretApp(ctk.CTk):
             self._cfgw("tg_sub", text="Прокси не запущен")
         # индикатор прокси на дашборде
         self._cfgw("dash_proxy_dot", text_color=GREEN if tg else MUTED)
-        self._cfgw("dash_proxy_lbl", text="Telegram: вкл" if tg else "Telegram: выкл")
+        self._cfgw("dash_proxy_lbl", text="Включён" if tg else "Выключен")
 
         if self.tray is not None:
             try:
@@ -1552,9 +1528,11 @@ class ZapretApp(ctk.CTk):
         if name and name != "—" and self.cfg.get("strategy") != name:
             self.log_msg(f"Выбран пресет: «{name}»")
         self.cfg["strategy"] = name
-        zc.save_config(self.cfg)
+        zc.update_config({"strategy": self.cfg["strategy"]})
 
     def on_start(self):
+        if self.auto_running:
+            return
         if self._stop_busy:
             # асинхронная остановка ещё добивает winws — запуск сейчас будет
             # убит её taskkill'ом (наблюдалось в логах как «код None» и рестарты)
@@ -1677,7 +1655,7 @@ class ZapretApp(ctk.CTk):
                 # и статус показывают не ту стратегию, что реально работает
                 self.active_preset_name = preset["name"]
                 self.cfg["strategy"] = preset["name"]
-                zc.save_config(self.cfg)
+                zc.update_config({"strategy": self.cfg["strategy"]})
                 self.post(lambda: self.strategy_var.set(preset["name"]))
             self.log_msg("Служба установлена." if ok else "[ОШИБКА] Служба не установлена.")
             self.post(self.refresh_status)
@@ -1714,7 +1692,7 @@ class ZapretApp(ctk.CTk):
         if self.cfg.get("first_run_done"):
             return
         self.cfg["first_run_done"] = True
-        zc.save_config(self.cfg)
+        zc.update_config({"first_run_done": self.cfg["first_run_done"]})
         self._ask_mode_dialog()
 
     # -- авто-восстановление (watchdog) ----------------------------------- #
@@ -1731,7 +1709,7 @@ class ZapretApp(ctk.CTk):
                 zc.run_hidden(["net", "start", zc.SERVICE_NAME])
                 self.post(self.refresh_status)
             self.cfg.pop("svc_stopped_for_search", None)
-            zc.save_config(self.cfg)
+            zc.update_config({}, remove=("svc_stopped_for_search",))
 
         self._bg(worker)
 
@@ -1873,7 +1851,7 @@ class ZapretApp(ctk.CTk):
             ok, _log = zc.install_service(name, preset["args"], mode)
             self.active_preset_name = name
             self.cfg["strategy"] = name
-            zc.save_config(self.cfg)
+            zc.update_config({"strategy": self.cfg["strategy"]})
             self.post(lambda: self.strategy_var.set(name))
             self.post(self.refresh_status)
             self.log_msg(f"Служба переустановлена со стратегией «{name}»."
@@ -1896,7 +1874,7 @@ class ZapretApp(ctk.CTk):
             self.log_msg(f"--- Запуск пресета: {name} (переключение) ---")
             self._spawn_winws(args, name)
             self.cfg["strategy"] = name
-            zc.save_config(self.cfg)
+            zc.update_config({"strategy": self.cfg["strategy"]})
             self.post(lambda: self.strategy_var.set(name))
             self.post(self.refresh_status)
         except Exception as e:
@@ -1927,13 +1905,13 @@ class ZapretApp(ctk.CTk):
             self.log_msg(str(e))
 
     def _on_appearance_change(self, value):
-        mode = APPEARANCE.get(value, "dark")
+        mode = APPEARANCE.get(value, "light")
         self.cfg["appearance"] = mode
-        zc.save_config(self.cfg)
+        zc.update_config({"appearance": self.cfg["appearance"]})
         ctk.set_appearance_mode(mode)
         # у акцента свой вариант под светлую/тёмную — пересчитать под новый режим
         # и пересобрать интерфейс (акценты хранятся как одиночные цвета режима)
-        _apply_accent(self.cfg.get("accent_name", "Сигнальная"))
+        _apply_accent(self.cfg.get("accent_name", "Синяя"))
         self._rebuild_ui()
         self.log_msg(f"Тема: {value.lower()}.")
 
@@ -1941,7 +1919,7 @@ class ZapretApp(ctk.CTk):
         # акцент применяется СРАЗУ, без перезапуска — пересобираем интерфейс
         _apply_accent(value)
         self.cfg["accent_name"] = value
-        zc.save_config(self.cfg)
+        zc.update_config({"accent_name": self.cfg["accent_name"]})
         self._rebuild_ui()
         self.log_msg(f"Акцент: {value}.")
 
@@ -2080,7 +2058,7 @@ class ZapretApp(ctk.CTk):
                       fill="#ffffff")
         img = base.copy()
         d = ImageDraw.Draw(img)
-        dot = GREEN if running else RED
+        dot = _pick(GREEN if running else MUTED)
         d.ellipse([44, 44, 60, 60], fill=dot, outline="#15161c", width=2)
         return img
 
@@ -2171,9 +2149,9 @@ class ZapretApp(ctk.CTk):
             dot, txt, label = self.health_widgets[k]
             dot.configure(text_color=GREEN if ok else RED)
             if ok:
-                txt.configure(text=f"{label}: {int(ms)} мс" if ms else f"{label}: ок")
+                txt.configure(text=f"{int(ms)} мс" if ms is not None else "Доступен")
             else:
-                txt.configure(text=f"{label}: нет связи")
+                txt.configure(text="Нет связи")
 
     def _health_auto(self):
         if self._closing:
@@ -2255,16 +2233,9 @@ class ZapretApp(ctk.CTk):
         self.on_diag_run()
 
     def on_test(self):
-        ps1 = os.path.join(zc.UTILS, "test zapret.ps1")
-        if not os.path.exists(ps1):
-            messagebox.showerror("Zapret", f"Не найден файл теста:\n{ps1}")
-            return
-        self.log_msg("Запуск теста соединения в окне PowerShell…")
-        import subprocess
-        subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                          "-File", ps1])
+        self.log_msg("Проверка доступности Discord, YouTube и Google…")
+        self.on_health_check()
 
-    # -- обновление приложения -------------------------------------------- #
     def _startup_update_check(self):
         if not zc.get_update_enabled():
             return
@@ -2320,9 +2291,13 @@ class ZapretApp(ctk.CTk):
             messagebox.showwarning("Обновление", msg + "В релизе нет архива (.zip).")
             return
         if messagebox.askyesno("Обновление", msg + "Скачать и установить сейчас?"):
-            self._do_update(info["url"], info.get("size", 0))
+            self._do_update(info["url"], info.get("size", 0), info.get("digest", ""))
 
-    def _do_update(self, url, size=0):
+    def _do_update(self, url, size=0, digest=""):
+        if self.auto_running or getattr(self, "_update_busy", False):
+            self.log_msg("Дождитесь завершения текущего поиска или обновления.")
+            return
+        self._update_busy = True
         self.log_msg("Скачивание обновления…")
         self._cfgw("upd_label", text="скачивание…")
 
@@ -2337,11 +2312,12 @@ class ZapretApp(ctk.CTk):
                     self.log_msg(f"  скачано {pct}%")
 
             try:
-                zc.download_update(url, dest, progress_cb=prog, expected_size=size)
+                zc.download_update(url, dest, progress_cb=prog, expected_size=size, expected_digest=digest)
                 self.log_msg("Загрузка завершена. Установка и перезапуск…")
                 zc.apply_update(dest)
                 self.post(self._quit_for_update)
             except Exception as e:
+                self._update_busy = False
                 self.log_msg(f"[ОШИБКА] обновление: {e}")
                 self.post(lambda: self._cfgw("upd_label", text="ошибка"))
 
@@ -2349,7 +2325,13 @@ class ZapretApp(ctk.CTk):
 
     def _quit_for_update(self):
         self.log_msg("Закрываю приложение для применения обновления…")
-        self.after(500, self.destroy)
+        self._closing = True
+        zc.tg_proxy_stop()
+        if self.tray is not None:
+            self.tray.stop()
+        if self._logf:
+            self._logf.close()
+        self.destroy()
 
     def show_args(self):
         preset = self._selected_preset()
@@ -2509,7 +2491,7 @@ class ZapretApp(ctk.CTk):
 
     # -- авто-поиск (двухфазный) ------------------------------------------ #
     def on_auto_start(self):
-        if self.auto_running:
+        if self.auto_running or self._stop_busy:
             return
         services = [s for s in ("discord", "youtube", "google") if self.svc_vars[s].get()]
         if not services:
@@ -2538,7 +2520,7 @@ class ZapretApp(ctk.CTk):
 
     def _on_fast_toggle(self):
         self.cfg["auto_fast"] = bool(self.fast_var.get())
-        zc.save_config(self.cfg)
+        zc.update_config({"auto_fast": self.cfg["auto_fast"]})
 
     def on_auto_stop(self):
         if self.auto_running:
@@ -2568,7 +2550,7 @@ class ZapretApp(ctk.CTk):
                 # метка на случай, если приложение закроют посреди поиска:
                 # при следующем старте служба будет запущена обратно
                 self.cfg["svc_stopped_for_search"] = True
-                zc.save_config(self.cfg)
+                zc.update_config({"svc_stopped_for_search": self.cfg["svc_stopped_for_search"]})
                 zc.run_hidden(["net", "stop", zc.SERVICE_NAME])
             if self.proc and self.proc.poll() is None:
                 self.log_msg("Текущий обход остановлен на время поиска.")
@@ -2676,7 +2658,7 @@ class ZapretApp(ctk.CTk):
                 self.log_msg("Возвращаю службу zapret…")
                 zc.run_hidden(["net", "start", zc.SERVICE_NAME])
                 self.cfg.pop("svc_stopped_for_search", None)
-                zc.save_config(self.cfg)
+                zc.update_config({}, remove=("svc_stopped_for_search",))
             self.post(self._auto_done)
 
     def _auto_prog(self, frac, text):
@@ -2702,13 +2684,28 @@ class ZapretApp(ctk.CTk):
         if total > 0:
             if zc.result_is_better((name, total, avg_lat), self.auto_best):
                 self.auto_best = (name, total, avg_lat)
-            self.btn_apply_best.configure(state="normal")
-            self.btn_install_best.configure(state="normal")
+            if not self.auto_running:
+                self.btn_apply_best.configure(state="normal")
+                self.btn_install_best.configure(state="normal")
         if total == self.auto_total_targets:   # полностью рабочая — в пул запаса
             self._auto_full_pass.append((name, avg_lat if avg_lat else 1e9))
 
     def _auto_done(self):
         self.auto_running = False
+        self.btn_apply_best.configure(state="normal" if self.auto_best else "disabled")
+        self.btn_install_best.configure(state="normal" if self.auto_best else "disabled")
+        if self.auto_cancel:
+            self._auto_autoapply = False
+            self.btn_auto_start.configure(state="normal")
+            self.btn_auto_stop.configure(state="disabled")
+            self.btn_start.configure(state="normal")
+            self.btn_stop.configure(state="normal")
+            self.auto_phase_lbl.configure(text="Поиск отменён")
+            self._cfgw("simple_fix_btn", state="normal")
+            self._cfgw("simple_fix_lbl", text="Поиск отменён")
+            self.log_msg("Авто-поиск отменён. Запасные стратегии сохранены.")
+            self.refresh_status()
+            return
         self.btn_auto_start.configure(state="normal")
         self.btn_auto_stop.configure(state="disabled")
         self.btn_start.configure(state="normal")
@@ -2724,7 +2721,7 @@ class ZapretApp(ctk.CTk):
         self.cfg["recovery_pool"] = pool
         if pool:
             self.cfg["auto_recovery"] = True   # есть запас — включаем восстановление
-        zc.save_config(self.cfg)
+        zc.update_config({"recovery_pool": pool, **({"auto_recovery": True} if pool else {})})
         if pool:
             try:
                 self.recovery_switch.select()
@@ -2757,7 +2754,7 @@ class ZapretApp(ctk.CTk):
         self.refresh_status()
 
     def on_apply_best(self):
-        if not self.auto_best:
+        if self.auto_running or not self.auto_best:
             return
         name = self.auto_best[0]
         self.strategy_var.set(name)
@@ -2773,7 +2770,7 @@ class ZapretApp(ctk.CTk):
             self.on_start()
 
     def on_install_best(self):
-        if not self.auto_best:
+        if self.auto_running or not self.auto_best:
             return
         self.strategy_var.set(self.auto_best[0])
         self._show_page("control")

@@ -26,6 +26,8 @@ import asyncio
 import threading
 import subprocess
 import urllib.request
+import tempfile
+import ipaddress
 
 
 # --------------------------------------------------------------------------- #
@@ -99,7 +101,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.41.0"
+APP_VERSION = "2.42.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -159,8 +161,6 @@ REFRESH_DEFAULT_FILES = (
     os.path.join("lists", "list-google.txt"),
     os.path.join("lists", "list-exclude.txt"),
     os.path.join("lists", "ipset-exclude.txt"),
-    os.path.join("utils", "targets.txt"),
-    os.path.join("utils", "test zapret.ps1"),
 )
 
 
@@ -251,6 +251,18 @@ def refresh_defaults():
     if cfg.get("defaults_version") == APP_VERSION:
         return []
     refreshed = []
+    presets_src = os.path.join(src, "presets.json")
+    if os.path.isfile(presets_src):
+        with open(presets_src, encoding="utf-8") as f:
+            incoming = json.load(f)
+        names = {p["name"] for p in incoming["presets"]}
+        incoming["presets"].extend(p for p in load_presets() if p["name"] not in names)
+        if os.path.isfile(PRESETS_JSON):
+            shutil.copy2(PRESETS_JSON, PRESETS_JSON + ".backup")
+        _atomic_write(PRESETS_JSON, json.dumps(incoming, ensure_ascii=False,
+                                              indent=2).encode("utf-8"))
+        refreshed.append(PRESETS_JSON)
+    complete = True
     for rel in REFRESH_DEFAULT_FILES:
         sp, dp = os.path.join(src, rel), os.path.join(BASE, rel)
         if not os.path.isfile(sp):
@@ -261,9 +273,9 @@ def refresh_defaults():
                 shutil.copy2(sp, dp)
                 refreshed.append(dp)
         except Exception:
-            pass
-    cfg["defaults_version"] = APP_VERSION
-    save_config(cfg)
+            complete = False
+    if complete:
+        update_config({"defaults_version": APP_VERSION})
     return refreshed
 
 
@@ -541,22 +553,6 @@ def load_presets():
     return _presets_from_bats()
 
 
-def quote_for_service(tok):
-    q = '\\"'
-
-    def needs(v):
-        return (":" in v) or (" " in v)
-
-    if tok.startswith("--") and "=" in tok:
-        k, v = tok.split("=", 1)
-        if needs(v):
-            v = q + v + q
-        return k + "=" + v
-    if needs(tok):
-        return q + tok + q
-    return tok
-
-
 # --------------------------------------------------------------------------- #
 #  Настройки
 # --------------------------------------------------------------------------- #
@@ -616,30 +612,45 @@ def ipset_enabled():
 def load_config():
     try:
         with open(CONFIG_FILE, encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
 
-_cfg_write_lock = threading.Lock()
+_cfg_write_lock = threading.RLock()
+
+
+def _atomic_write(path, data):
+    """Сначала записать новый файл целиком, затем заменить старый."""
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".zapret-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def save_config(cfg):
-    # Конфиг пишется из разных потоков (тумблеры, авто-поиск, watchdog). Снимок
-    # dict(cfg) под GIL атомарен — исключает "dictionary changed size during
-    # iteration" при сериализации живого словаря; блокировка сериализует записи
-    # в файл (без неё два потока могли перезаписать файл вперемешку).
-    try:
-        snapshot = dict(cfg)
-    except Exception:
-        snapshot = cfg
-    try:
-        os.makedirs(UTILS, exist_ok=True)
-        with _cfg_write_lock:
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump(snapshot, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    """Полная замена при импорте. Для изменения отдельных полей — update_config."""
+    with _cfg_write_lock:
+        _atomic_write(CONFIG_FILE, json.dumps(dict(cfg), ensure_ascii=False,
+                                             indent=2).encode("utf-8"))
+
+
+def update_config(changes, remove=()):
+    """Менять только указанные поля, сохраняя изменения других потоков."""
+    with _cfg_write_lock:
+        cfg = load_config()
+        cfg.update(changes)
+        for key in remove:
+            cfg.pop(key, None)
+        save_config(cfg)
+        return cfg
 
 
 def export_settings(path):
@@ -765,19 +776,19 @@ def install_service(display_name, argstr, mode):
     run_hidden(["sc", "delete", SERVICE_NAME])
     enable_tcp_timestamps()
 
-    svc_args = " ".join(quote_for_service(t) for t in args)
-    binpath = f'\\"{WINWS}\\" {svc_args}'
-    cmd = (f'sc create {SERVICE_NAME} binPath= "{binpath}" '
-           f'DisplayName= "zapret" start= auto')
-    res = run_hidden(cmd, shell=True)
+    binpath = subprocess.list2cmdline([WINWS] + args)
+    res = run_hidden(["sc", "create", SERVICE_NAME, "binPath=", binpath,
+                      "DisplayName=", "zapret", "start=", "auto"])
     logs.append((res.stdout or res.stderr).strip())
+    if res.returncode:
+        return False, "\n".join(logs)
     run_hidden(["sc", "description", SERVICE_NAME, "Zapret DPI bypass software"])
     sres = run_hidden(["sc", "start", SERVICE_NAME])
     logs.append((sres.stdout or sres.stderr).strip())
 
     run_hidden(["reg", "add", r"HKLM\System\CurrentControlSet\Services\zapret",
                 "/v", "zapret-discord-youtube", "/t", "REG_SZ", "/d", display_name, "/f"])
-    return service_installed(), "\n".join(x for x in logs if x)
+    return sres.returncode == 0 and service_running(), "\n".join(x for x in logs if x)
 
 
 def remove_service():
@@ -789,20 +800,19 @@ def remove_service():
 
 def update_ipset():
     try:
-        if os.path.exists(IPSET_FILE):
-            backup = IPSET_FILE + ".backup"
-            try:
-                if os.path.exists(backup):
-                    os.remove(backup)
-                os.replace(IPSET_FILE, backup)
-            except Exception:
-                pass
         req = urllib.request.Request(IPSET_URL, headers={"Cache-Control": "no-cache"})
         with urllib.request.urlopen(req, timeout=15) as r:
             data = r.read()
-        with open(IPSET_FILE, "wb") as f:
-            f.write(data)
-        n = len([x for x in data.decode("utf-8", "replace").splitlines() if x.strip()])
+        entries = [x.strip() for x in data.decode("utf-8-sig").splitlines()
+                   if x.strip() and not x.lstrip().startswith("#")]
+        if not entries:
+            raise ValueError("получен пустой IPSet")
+        for entry in entries:
+            ipaddress.ip_network(entry, strict=False)
+        if os.path.exists(IPSET_FILE):
+            shutil.copy2(IPSET_FILE, IPSET_FILE + ".backup")
+        _atomic_write(IPSET_FILE, data)
+        n = len(entries)
         return True, f"IPSet обновлён: {n} строк."
     except Exception as e:
         return False, f"Ошибка обновления IPSet: {e}"
@@ -825,11 +835,13 @@ def normalize_domain(raw):
         s = s[4:]
     if not s or "." not in s or " " in s:
         return ""
-    if not re.match(r"^[a-z0-9.*_-]+$", s):
-        try:                                   # IDN (кириллица и т.п.) -> punycode
-            s = s.encode("idna").decode("ascii")
-        except Exception:
-            return ""
+    try:
+        s = s.encode("idna").decode("ascii")
+    except UnicodeError:
+        return ""
+    if len(s) > 253 or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                           for label in s.split(".")):
+        return ""
     return s
 
 
@@ -881,18 +893,16 @@ def update_lists():
             if not data.strip():
                 parts.append(f"{name}: пусто")
                 continue
-            with open(os.path.join(LISTS, name), "wb") as f:
-                f.write(data)
+            _atomic_write(os.path.join(LISTS, name), data)
             n = len([x for x in data.decode("utf-8", "replace").splitlines()
                      if x.strip() and not x.strip().startswith("#")])
             parts.append(f"{name.replace('list-', '').replace('.txt', '')}: {n}")
             ok_any = True
         except Exception as e:
             parts.append(f"{name}: ошибка ({e})")
-    if ok_any:
-        cfg = load_config()
-        cfg["lists_last_update"] = int(time.time())
-        save_config(cfg)
+    if ok_any and len(parts) == len(LIST_UPDATE_FILES) and not any(
+            "ошибка" in part or "пусто" in part for part in parts):
+        update_config({"lists_last_update": int(time.time())})
     return ok_any, ("Списки обновлены — " if ok_any else "Не удалось обновить — ") + "; ".join(parts)
 
 
@@ -908,7 +918,7 @@ def lists_update_due():
     cfg = load_config()
     if not cfg.get("lists_auto_update"):
         return False
-    last = int(cfg.get("lists_last_update", 0) or 0)
+    last = lists_last_update_ts()
     return (time.time() - last) >= LISTS_UPDATE_INTERVAL_DAYS * 86400
 
 
@@ -1105,20 +1115,23 @@ def check_update(timeout=10):
             data = json.loads(r.read().decode("utf-8", "replace"))
         latest = (data.get("tag_name") or "").strip()
         notes = data.get("body") or ""
-        url, size = "", 0
+        url, size, digest = "", 0, ""
         for a in data.get("assets", []):
-            if a.get("name", "").lower().endswith(".zip"):
+            if a.get("name", "").lower() == "zapretcontrol.zip":
                 url = a.get("browser_download_url", "")
                 size = int(a.get("size") or 0)
+                digest = a.get("digest") or ""
                 break
         available = bool(latest) and _version_tuple(latest) > _version_tuple(APP_VERSION)
         return {"available": available, "current": APP_VERSION,
-                "latest": latest or "?", "url": url, "size": size, "notes": notes}
+                "latest": latest or "?", "url": url, "size": size,
+                "digest": digest, "notes": notes}
     except Exception as e:
         return {"error": str(e)}
 
 
-def download_update(url, dest, progress_cb=None, timeout=180, expected_size=0):
+def download_update(url, dest, progress_cb=None, timeout=180, expected_size=0,
+                    expected_digest=""):
     """Скачать архив обновления с проверкой целостности по размеру."""
     req = urllib.request.Request(url, headers={"User-Agent": "ZapretGUI"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -1135,47 +1148,53 @@ def download_update(url, dest, progress_cb=None, timeout=180, expected_size=0):
                     progress_cb(got / total)
     if expected_size and os.path.getsize(dest) != expected_size:
         raise RuntimeError("Размер загрузки не совпал — повреждённый файл")
+    if expected_digest:
+        kind, _, digest = expected_digest.partition(":")
+        if kind != "sha256" or _sha256(dest) != digest.lower():
+            raise RuntimeError("Контрольная сумма загрузки не совпала")
     return dest
 
 
 def apply_update(zip_path):
-    """Распаковать архив обновления и заменить установку (через .bat-хелпер).
-    Доступно только в собранном приложении (onedir)."""
+    """Подготовить onedir-обновление; отдельный PowerShell ждёт выхода GUI."""
     if not getattr(sys, "frozen", False):
         raise RuntimeError("Самообновление доступно только в собранном приложении")
-    install_dir = BASE
-    pid = os.getpid()
-    temp_root = os.path.join(os.environ.get("TEMP", BASE),
-                             f"zapret_upd_{int(time.time())}")
-    os.makedirs(temp_root, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as z:
-        z.extractall(temp_root)
-
-    src = None
-    for root, _dirs, files in os.walk(temp_root):
-        if "ZapretControl.exe" in files:
-            src = root
-            break
-    if not src:
-        raise RuntimeError("В архиве обновления не найден ZapretControl.exe")
-
-    bat = os.path.join(os.environ.get("TEMP", BASE), "zapret_gui_update.bat")
+    install_dir = os.path.dirname(os.path.abspath(sys.executable))
+    stage = tempfile.mkdtemp(prefix="zapret_upd_")
+    with zipfile.ZipFile(zip_path) as archive:
+        for info in archive.infolist():
+            parts = info.filename.replace("\\", "/").split("/")
+            if (parts[0] != "ZapretControl" or ".." in parts
+                    or any(":" in part for part in parts)
+                    or (info.external_attr >> 16) & 0o170000 == 0o120000):
+                raise RuntimeError("Недопустимый путь в архиве обновления")
+            if len(parts) > 1 and parts[1] not in ("", "ZapretControl.exe", "_internal"):
+                raise RuntimeError("Неожиданная структура архива обновления")
+        archive.extractall(stage)
+    src = os.path.join(stage, "ZapretControl")
+    if not os.path.isfile(os.path.join(src, "ZapretControl.exe")) or not os.path.isdir(
+            os.path.join(src, "_internal")):
+        raise RuntimeError("В архиве нет полной сборки ZapretControl")
+    # ponytail: staging сохраняется при ошибке для ручного восстановления;
+    # успешное обновление удаляет только проверенную папку распаковки.
+    quote = lambda value: "'" + value.replace("'", "''") + "'"
     script = (
-        "@echo off\r\n"
-        "chcp 65001 >nul\r\n"
-        ":wait\r\n"
-        f'tasklist /FI "PID eq {pid}" | find "{pid}" >nul\r\n'
-        "if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto wait )\r\n"
-        f'robocopy "{src}" "{install_dir}" /E /IS /IT /R:2 /W:1 '
-        "/NFL /NDL /NJH /NJS /NP >nul\r\n"
-        f'start "" "{install_dir}\\ZapretControl.exe"\r\n'
-        f'rmdir /s /q "{temp_root}" >nul 2>&1\r\n'
-        f'del "{zip_path}" >nul 2>&1\r\n'
-        'del "%~f0"\r\n'
+        "$ErrorActionPreference='Stop'\n"
+        f"$stage={quote(stage)}; $source={quote(src)}; $install={quote(install_dir)}\n"
+        "try {\n"
+        f"Wait-Process -Id {os.getpid()} -ErrorAction SilentlyContinue\n"
+        "& robocopy $source $install /E /IS /IT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP\n"
+        "if ($LASTEXITCODE -ge 8) { throw ('Ошибка копирования: '+$LASTEXITCODE) }\n"
+        "Start-Process -FilePath (Join-Path $install 'ZapretControl.exe') -WorkingDirectory $install\n"
+        "if ((Split-Path -Parent ([IO.Path]::GetFullPath($source))) -ne $stage) { throw 'Invalid cleanup path' }\n"
+        "Remove-Item -LiteralPath $source -Recurse -Force\n"
+        "} catch { $_ | Out-String | Set-Content -LiteralPath (Join-Path $stage 'update-error.txt'); exit 1 }\n"
     )
-    with open(bat, "w", encoding="utf-8") as f:
+    helper = os.path.join(stage, "update.ps1")
+    with open(helper, "w", encoding="utf-8-sig") as f:
         f.write(script)
-    subprocess.Popen(["cmd", "/c", bat], creationflags=CREATE_NO_WINDOW,
+    subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                      "-File", helper], creationflags=CREATE_NO_WINDOW,
                      startupinfo=_startupinfo())
 
 
@@ -1240,30 +1259,31 @@ def check_hosts(hosts, timeout, attempts=1):
 _tg_thread = None          # поток с asyncio-циклом прокси
 _tg_async = None           # (loop, stop_event)
 _tg_error = ""             # последняя ошибка запуска
+_tg_lock = threading.Lock()
 
 
 def tg_get_secret():
     """32-символьный hex-секрет (стабильный, хранится в конфиге)."""
-    cfg = load_config()
-    sec = cfg.get("tg_secret")
-    if not sec or len(sec) != 32:
-        sec = os.urandom(16).hex()
-        cfg["tg_secret"] = sec
-        save_config(cfg)
-    return sec
+    with _cfg_write_lock:
+        sec = load_config().get("tg_secret")
+        if not isinstance(sec, str) or not re.fullmatch(r"[0-9a-fA-F]{32}", sec):
+            sec = tg_regenerate_secret()
+        return sec
 
 
 def tg_get_port():
     try:
-        return int(load_config().get("tg_port", TG_DEFAULT_PORT))
+        port = int(load_config().get("tg_port", TG_DEFAULT_PORT))
+        return port if 1 <= port <= 65535 else TG_DEFAULT_PORT
     except Exception:
         return TG_DEFAULT_PORT
 
 
 def set_tg_port(port):
-    cfg = load_config()
-    cfg["tg_port"] = int(port)
-    save_config(cfg)
+    port = int(port)
+    if not 1 <= port <= 65535:
+        raise ValueError("Порт должен быть числом 1–65535")
+    update_config({"tg_port": port})
 
 
 def tg_get_cfproxy():
@@ -1271,16 +1291,11 @@ def tg_get_cfproxy():
 
 
 def tg_set_cfproxy(on):
-    cfg = load_config()
-    cfg["tg_cfproxy"] = bool(on)
-    save_config(cfg)
+    update_config({"tg_cfproxy": bool(on)})
 
 
 def tg_regenerate_secret():
-    cfg = load_config()
-    cfg["tg_secret"] = os.urandom(16).hex()
-    save_config(cfg)
-    return cfg["tg_secret"]
+    return update_config({"tg_secret": os.urandom(16).hex()})["tg_secret"]
 
 
 def tg_proxy_url():
@@ -1379,6 +1394,11 @@ def _setup_proxy_logging():
 
 
 def tg_proxy_start():
+    with _tg_lock:
+        _tg_proxy_start_locked()
+
+
+def _tg_proxy_start_locked():
     """Запустить встроенный MTProto-WS-прокси в фоновом потоке."""
     global _tg_thread, _tg_async, _tg_error
     if tg_proxy_running():
@@ -1394,22 +1414,21 @@ def tg_proxy_start():
     # часто отдаёт HTTP 429 (rate limit) и вызывает кратковременные обрывы. Если
     # прямые соединения к DC работают, фолбэк лучше отключить (тумблер в UI).
     proxy_config.fallback_cfproxy = bool(load_config().get("tg_cfproxy", True))
+    loop = asyncio.new_event_loop()
+    ev = asyncio.Event()
+    _tg_async = (loop, ev)  # остановка возможна сразу после запуска потока
 
     def runner():
         global _tg_async, _tg_error
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        ev = asyncio.Event()
-        _tg_async = (loop, ev)
         try:
-            loop.run_until_complete(_run(stop_event=ev))
+            with asyncio.Runner(loop_factory=lambda: loop) as runner:
+                asyncio.set_event_loop(loop)
+                runner.run(_run(stop_event=ev))
         except Exception as exc:
             _tg_error = repr(exc)
         finally:
-            try:
-                loop.close()
-            except Exception:
-                pass
+            from tgproxy.config import _refresh_stop
+            _refresh_stop.set()
             _tg_async = None
 
     _tg_thread = threading.Thread(target=runner, daemon=True, name="tg-proxy")
@@ -1418,15 +1437,18 @@ def tg_proxy_start():
 
 def tg_proxy_stop():
     global _tg_thread, _tg_async
-    if _tg_async:
-        loop, ev = _tg_async
-        try:
-            loop.call_soon_threadsafe(ev.set)
-        except Exception:
-            pass
+    with _tg_lock:
+        if _tg_async:
+            loop, ev = _tg_async
+            try:
+                loop.call_soon_threadsafe(ev.set)
+            except RuntimeError:
+                pass
         if _tg_thread:
             _tg_thread.join(timeout=5)
-    _tg_thread = None
+            if _tg_thread.is_alive():
+                raise RuntimeError("Прокси ещё останавливается. Повторите через несколько секунд.")
+        _tg_thread = None
 
 
 # --------------------------------------------------------------------------- #
@@ -1476,14 +1498,22 @@ def make_support_bundle():
             for name in os.listdir(LOGS):
                 if name.endswith(".txt") or name.endswith(".log"):
                     try:
-                        z.write(os.path.join(LOGS, name), f"logs/{name}")
+                        with open(os.path.join(LOGS, name), encoding="utf-8", errors="replace") as f:
+                            z.writestr(f"logs/{name}", _redact_secrets(f.read()))
                     except Exception:
                         pass
         try:
-            z.write(CONFIG_FILE, "app_config.json")
+            cfg = load_config()
+            cfg.pop("tg_secret", None)
+            z.writestr("app_config.json", json.dumps(cfg, ensure_ascii=False, indent=2))
         except Exception:
             pass
     return path
+
+
+def _redact_secrets(text):
+    return re.sub(r"(?i)(secret[=:]\s*)(?:dd|ee)?[0-9a-f]{32,}",
+                  r"\1[REDACTED]", text)
 
 
 # --------------------------------------------------------------------------- #
@@ -1532,9 +1562,7 @@ def doh_enable(provider="cloudflare"):
             "Clear-DnsClientCache -ErrorAction SilentlyContinue\n"
         )
         _ps(script)
-        cfg["doh_provider"] = provider
-        cfg["doh_enabled"] = True
-        save_config(cfg)
+        update_config({"doh_provider": provider, "doh_enabled": True})
         return True
 
     # первое включение — захватить прежний DNS
@@ -1559,10 +1587,7 @@ def doh_enable(provider="cloudflare"):
                 prev = {str(k): str(v) for k, v in data.items()}
     except Exception:
         prev = {}
-    cfg["doh_enabled"] = True
-    cfg["doh_provider"] = provider
-    cfg["doh_prev"] = prev
-    save_config(cfg)
+    update_config({"doh_enabled": True, "doh_provider": provider, "doh_prev": prev})
     return True
 
 
@@ -1586,9 +1611,7 @@ def doh_disable():
                      "-ResetServerAddresses -ErrorAction SilentlyContinue }")
     lines.append("Clear-DnsClientCache -ErrorAction SilentlyContinue")
     _ps("\n".join(lines))
-    cfg["doh_enabled"] = False
-    cfg["doh_prev"] = {}
-    save_config(cfg)
+    update_config({"doh_enabled": False, "doh_prev": {}})
     return True
 
 
@@ -1611,6 +1634,8 @@ _EXCLUDE_PLACEHOLDER = "domain.example.abc"
 def cleanup_xbox_legacy():
     """Откатить прежний Xbox-фикс: убрать блок из hosts и домены из
     list-exclude-user.txt. Вызывается один раз при старте."""
+    if not load_config().get("xbox_fix"):
+        return
     # 1) убрать блок из hosts
     try:
         with open(HOSTS_FILE, encoding="utf-8", errors="replace") as f:
@@ -1636,10 +1661,7 @@ def cleanup_xbox_legacy():
         pass
     # 3) очистить флаг в конфиге
     try:
-        cfg = load_config()
-        if "xbox_fix" in cfg:
-            cfg.pop("xbox_fix", None)
-            save_config(cfg)
+        update_config({}, remove=("xbox_fix",))
     except Exception:
         pass
 
@@ -1707,7 +1729,7 @@ def set_game_exclusions(on):
 #  Антивирус (исключения Windows Defender) и перезапуск — Фаза 5
 # --------------------------------------------------------------------------- #
 def defender_exclusion_exists(path=None):
-    path = path or BASE
+    path = (path or BASE).replace("'", "''")
     try:
         out = _ps(f"if((Get-MpPreference).ExclusionPath -contains '{path}')"
                   "{'YES'}else{'NO'}").stdout.strip()
@@ -1718,7 +1740,7 @@ def defender_exclusion_exists(path=None):
 
 def add_defender_exclusion(path=None):
     """Добавить папку и winws.exe в исключения Windows Defender (-> (ok, msg))."""
-    path = path or BASE
+    path = (path or BASE).replace("'", "''")
     try:
         out = _ps(
             "try{"
@@ -1733,7 +1755,7 @@ def add_defender_exclusion(path=None):
 
 
 def remove_defender_exclusion(path=None):
-    path = path or BASE
+    path = (path or BASE).replace("'", "''")
     try:
         _ps(f"Remove-MpPreference -ExclusionPath '{path}' -ErrorAction SilentlyContinue;"
             "Remove-MpPreference -ExclusionProcess 'winws.exe' -ErrorAction SilentlyContinue")

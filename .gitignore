@@ -1,6 +1,7 @@
 # Сборка PyInstaller
 build/
 dist/
+release/
 __pycache__/
 *.pyc
 *.pyo

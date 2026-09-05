@@ -1,0 +1,46 @@
+{
+  "zapret": {
+    "repository": "Flowseal/zapret-discord-youtube",
+    "tag": "1.10.2"
+  },
+  "tgproxy": {
+    "repository": "Flowseal/tg-ws-proxy",
+    "tag": "v1.10.1"
+  },
+  "sha256": {
+    "bin/ACTIVE_DISCORD_UDP.bin": "2fe18b3bd20807d36704d0b072092ee49ae84edca907a4420ab9a0f0f28fddcf",
+    "bin/ACTIVE_GAME_UDP.bin": "e065870cb0d13152e6132807bbf42218a9e7cd8d96f5602b61674cc540f3a56e",
+    "bin/cygwin1.dll": "103104a52e5293ce418944725df19e2bf81ad9269b9a120d71d39028e821499b",
+    "bin/quic_initial_4pda_to.bin": "e065870cb0d13152e6132807bbf42218a9e7cd8d96f5602b61674cc540f3a56e",
+    "bin/quic_initial_5ka_ru.bin": "247dcd97f53bfae5482e4b2b66acdb01e48ee6c29c5ca526c9b241fa38c233b5",
+    "bin/quic_initial_rutube_ru.bin": "74b1dfbdec125263c9407436658b0a848b8f0a934b8063d11571a6a2146a4a7b",
+    "bin/quic_initial_steamcommunity_com.bin": "2fe18b3bd20807d36704d0b072092ee49ae84edca907a4420ab9a0f0f28fddcf",
+    "bin/quic_initial_tencent_com.bin": "d250051d6200946a7ba0629c59c5641432957fa3513081a6c3c5aaa91a62ac03",
+    "bin/quic_initial_www_google_com.bin": "f4589c57749f956bb30538197a521d7005f8b0a8723b4707e72405e51ddac50a",
+    "bin/stun.bin": "9cd5469309780ca56c0bd97266524a48c7ee529d02c3179cfecb20b260a59641",
+    "bin/stun2.bin": "b7c2497496039c541f7337ac8536813f0a1cf52363ab2faa5213b7816d458813",
+    "bin/tls_clienthello_4pda_to.bin": "eefeaf09dde8d69b1f176212541f63c68b314a33a335eced99a8a29f17254da8",
+    "bin/tls_clienthello_5ka_ru.bin": "1e8871e272591c5a277d38a6166af597c1fecb1cf58e85162e8f1968ec08d018",
+    "bin/tls_clienthello_max_ru.bin": "4ee0870abe0a0128600b0095189987ba1d210dae8bf963bc725aff49cf922624",
+    "bin/tls_clienthello_sochi_park.bin": "ad552922acfe029521da884ea29f4bb28bb6bdcee9b1a70b46adbfd266c11d4d",
+    "bin/tls_clienthello_www_google_com.bin": "936c2bee4cfb80aa3c426b2dcbcc834b3fbcd1adb17172959dc569c73a14275c",
+    "bin/WinDivert.dll": "c1e060ee19444a259b2162f8af0f3fe8c4428a1c6f694dce20de194ac8d7d9a2",
+    "bin/WinDivert64.sys": "8da085332782708d8767bcace5327a6ec7283c17cfb85e40b03cd2323a90ddc2",
+    "bin/winws.exe": "affb4f69d2ea302a7abccd5325d81826e140ddae014f1e070bc4a6c0dd555188",
+    "lists/list-general.txt": "9ff3ae9e4bf0edbcf8fecb1bba7aac951aace2036cdb732ec3ef65dfc6db443b",
+    "lists/list-exclude.txt": "140adb9205bcc4477ed1dc3b8ef82ddc3ed05985126a606ff2b2c2d2b98694fd",
+    "lists/list-google.txt": "1e59f9d487f7bce12091c838151713d0a8d31c3aae20afefebb38206f2cd8232",
+    "lists/ipset-exclude.txt": "96c03954012765ce4ab03b9c30f29ab1ca1b698c6752224d03828e6d182eb0fc",
+    "tgproxy/balancer.py": "3d4330488b968e146286b14790c0814eae3efe5d0f26206572369ca6368eed24",
+    "tgproxy/bridge.py": "a8b300ada884dcfea0317fd5292504c0b4af6005ee26689bed260c7813ac340a",
+    "tgproxy/config.py": "5abd7abc1ebab88ec8554923e4ef5cd3f90c4937c88ed899ed91c66fe0b34d88",
+    "tgproxy/fake_tls.py": "ce4ce10990117f96522558bc38f2798630b4b736854fd0bf738ba886332b9cb9",
+    "tgproxy/pool.py": "50f94169f2ddd6961481a949532e3174430cd9f1cde81c8e06b29df43df9d66d",
+    "tgproxy/raw_websocket.py": "7dfd829ac33fbfaa41801a37231d3e00e1d61fdc4e190ec52ba5e6e2aa7f3312",
+    "tgproxy/stats.py": "be6174fe31392288c136cbd4ba9537cfb16efc839a148ae35aca7c467aeea73d",
+    "tgproxy/tg_ws_proxy.py": "f671a5816ee13ee0f96db370b5bb4b86b2075f6fc5349a4aad77f27348b95339",
+    "tgproxy/utils.py": "e33c782330abd83580c91df5207c95edf34b0b4bb1cae61b25af85cbdb89bd00",
+    "tgproxy/_aes.py": "5b07f23c1d65140fb933e2c31d42817012d2ff4b60664f69146fe2554d54d528",
+    "tgproxy/__init__.py": "b71cbd9382a822f997eebc2f0423c333a5007fbcd479ce06a6b8374acd1f42c7"
+  }
+}
