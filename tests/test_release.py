@@ -95,6 +95,7 @@ def test_service_uses_argument_list_and_checks_start(monkeypatch):
     assert zc.install_service("general", '--hostlist="C:\\a & b\\list.txt"', "off")[0]
     create = next(c for c in calls if c[:2] == ["sc", "create"])
     assert create[4] == subprocess.list2cmdline([zc.WINWS, '--hostlist=C:\\a & b\\list.txt'])
+    assert not any(call[:2] == ["taskkill", "/IM"] for call in calls)
     monkeypatch.setattr(zc, "service_running", lambda: False)
     assert zc.install_service("general", "--new", "off")[0] is False
 
@@ -109,6 +110,52 @@ def test_service_create_failure_does_not_claim_success(monkeypatch):
     monkeypatch.setattr(zc, "run_hidden", run)
     assert zc.install_service("general", "--new", "off")[0] is False
     assert ["sc", "start", zc.SERVICE_NAME] not in calls
+
+
+def test_stop_process_only_terminates_the_tracked_child():
+    class Child:
+        def __init__(self):
+            self.terminated = self.waited = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout):
+            self.waited = timeout
+
+    child = Child()
+    assert zc.stop_process(child, timeout=2) is True
+    assert child.terminated and child.waited == 2
+    assert zc.stop_process(None) is False
+
+
+def test_doh_updates_config_only_after_verified_powershell(config, monkeypatch):
+    zc.save_config({"doh_enabled": False, "doh_provider": "cloudflare"})
+    failed = SimpleNamespace(returncode=1, stdout="", stderr="access denied")
+    monkeypatch.setattr(zc, "_ps", lambda script: failed)
+    with pytest.raises(RuntimeError, match="access denied"):
+        zc.doh_enable("google")
+    assert zc.doh_status() == {"enabled": False, "provider": "cloudflare"}
+
+    ok = SimpleNamespace(returncode=0, stdout='{"7":["192.168.1.1"]}\n', stderr="")
+    monkeypatch.setattr(zc, "_ps", lambda script: ok)
+    assert zc.doh_enable("google") is True
+    cfg = zc.load_config()
+    assert cfg["doh_enabled"] and cfg["doh_provider"] == "google"
+    assert cfg["doh_prev"] == {"7": ["192.168.1.1"]}
+
+
+def test_doh_disable_refuses_to_forget_state_when_restore_fails(config, monkeypatch):
+    zc.save_config({"doh_enabled": True, "doh_provider": "cloudflare",
+                    "doh_prev": {"5": ["192.168.1.1"]}})
+    monkeypatch.setattr(zc, "_ps", lambda script: SimpleNamespace(
+        returncode=1, stdout="", stderr="adapter failed"))
+    with pytest.raises(RuntimeError, match="adapter failed"):
+        zc.doh_disable()
+    assert zc.doh_status()["enabled"] is True
 
 
 def test_upstream_files_match_recorded_hashes_and_presets_resolve():
@@ -203,7 +250,8 @@ def test_update_targets_executable_directory_not_data_directory(tmp_path, monkey
 
 def test_support_bundle_removes_secrets(config, tmp_path, monkeypatch):
     secret = "abcdef12" * 4
-    zc.save_config({"tg_secret": secret, "appearance": "light"})
+    zc.save_config({"tg_secret": secret, "appearance": "light",
+                    "doh_prev": {"7": ["192.168.1.1"]}})
     logs = tmp_path / "logs"
     logs.mkdir()
     (logs / "tg_proxy.log").write_text(f"Secret: {secret}\ntg://proxy?secret=dd{secret}\n", encoding="utf-8")
@@ -213,6 +261,35 @@ def test_support_bundle_removes_secrets(config, tmp_path, monkeypatch):
     monkeypatch.setattr(zc, "diagnose", lambda: [])
     with zipfile.ZipFile(zc.make_support_bundle()) as z:
         assert all(secret.encode() not in z.read(name) for name in z.namelist())
+        assert b"192.168.1.1" not in z.read("app_config.json")
+
+
+def test_preset_tags_are_short_and_derived_from_args():
+    assert zc.preset_tags({"name": "general (EXP)",
+                           "args": "--filter-tcp=443 --filter-udp=443 --dpi-desync=fake-quic"}) == [
+        "TCP", "UDP", "QUIC", "desync", "экспериментальный"]
+    assert zc.preset_tags({"name": "minimal", "args": ""}) == ["универсальный"]
+
+
+def test_recovery_does_not_cycle_back_to_a_failed_strategy():
+    loader = importlib.machinery.SourceFileLoader("test_zapret_recovery", str(ROOT / "zapret_app.pyw"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    ui = importlib.util.module_from_spec(spec)
+    loader.exec_module(ui)
+    switched = []
+    app = SimpleNamespace(
+        cfg={"recovery_pool": ["first", "second"], "auto_research_on_fail": False},
+        active_preset_name="first", _recovery_failed=set(),
+        preset_by_name={"first": {}, "second": {}}, log_msg=lambda *a: None,
+        _notify=lambda *a: None, _switch_to=switched.append,
+        _trigger_auto_research=lambda: None, _watchdog_restart=lambda: None,
+        auto_running=False,
+    )
+    ui.ZapretApp._recover(app, switch=True)
+    assert switched == ["second"]
+    app.active_preset_name = "second"
+    ui.ZapretApp._recover(app, switch=True)
+    assert switched == ["second"]
 
 
 def test_proxy_immediate_stop_cancels_pending_tasks(config, monkeypatch):

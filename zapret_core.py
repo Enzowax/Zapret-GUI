@@ -101,7 +101,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.42.0"
+APP_VERSION = "2.43.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -319,7 +319,7 @@ def relaunch_as_admin():
         exe, params = sys.executable, ""
     else:
         exe, params = sys.executable, f'"{os.path.abspath(sys.argv[0])}"'
-    ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, BASE, 1)
+    return ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, BASE, 1)
 
 
 # --------------------------------------------------------------------------- #
@@ -446,6 +446,24 @@ def strategy_signature(argstr):
     if "--ip-id=" in s:
         feats.add("ipid")
     return feats
+
+
+def preset_tags(preset):
+    """Короткие метки стратегии для выбора в GUI, без разбора BAT-файлов."""
+    name = str((preset or {}).get("name", ""))
+    args = str((preset or {}).get("args", "")).lower()
+    tags = []
+    if "--filter-tcp" in args:
+        tags.append("TCP")
+    if "--filter-udp" in args:
+        tags.append("UDP")
+    if "quic" in args:
+        tags.append("QUIC")
+    if "--dpi-desync" in args:
+        tags.append("desync")
+    if "(exp)" in name.lower():
+        tags.append("экспериментальный")
+    return tags or ["универсальный"]
 
 
 def prioritize_presets(presets, last_name=None, pool=None):
@@ -738,6 +756,11 @@ def enable_tcp_timestamps():
 
 
 def remove_windivert():
+    """Аварийный сброс драйвера после явной команды из диагностики.
+
+    Обычная остановка Zapret сюда не должна попадать: WinDivert может
+    использовать другая программа пользователя.
+    """
     run_hidden(["net", "stop", "WinDivert"])
     run_hidden(["sc", "delete", "WinDivert"])
     run_hidden(["net", "stop", "WinDivert14"])
@@ -745,6 +768,10 @@ def remove_windivert():
 
 
 def kill_winws_only():
+    """Аварийная совместимость для ручного сброса старых запусков.
+
+    Основной GUI останавливает только сохранённый Popen через stop_process().
+    """
     run_hidden(["taskkill", "/IM", "winws.exe", "/F"])
 
 
@@ -765,13 +792,28 @@ def start_winws_logged(args):
     )
 
 
+def stop_process(proc, timeout=5):
+    """Остановить только процесс, запущенный этим экземпляром приложения."""
+    if proc is None or proc.poll() is not None:
+        return False
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=timeout)
+    except OSError:
+        return False
+    return True
+
+
 def install_service(display_name, argstr, mode):
     """Создать службу автозапуска из строки аргументов. -> (ok, log)."""
     args = build_args_str(argstr, mode)
     if not args:
         return False, "Не удалось разобрать аргументы пресета."
     logs = []
-    kill_winws_only()
     run_hidden(["net", "stop", SERVICE_NAME])
     run_hidden(["sc", "delete", SERVICE_NAME])
     enable_tcp_timestamps()
@@ -794,8 +836,6 @@ def install_service(display_name, argstr, mode):
 def remove_service():
     run_hidden(["net", "stop", SERVICE_NAME])
     run_hidden(["sc", "delete", SERVICE_NAME])
-    kill_winws_only()
-    remove_windivert()
 
 
 def update_ipset():
@@ -972,7 +1012,8 @@ def diagnose():
 
     admin = is_admin()
     add("Права администратора", "ok" if admin else "bad",
-        "есть" if admin else "winws не сможет работать — запустите от администратора")
+        "есть" if admin else "winws не сможет работать — запустите от администратора",
+        None if admin else "relaunch_admin")
 
     bfe = "RUNNING" in run_hidden(["sc", "query", "BFE"]).stdout.upper()
     add("Base Filtering Engine (BFE)", "ok" if bfe else "bad",
@@ -1477,7 +1518,7 @@ def make_support_bundle():
     diag = [
         f"app_version = {APP_VERSION}",
         f"frozen      = {getattr(sys, 'frozen', False)}",
-        f"base        = {BASE}",
+        "base        = [hidden]",
         f"admin       = {is_admin()}",
         f"winws_run   = {winws_running()}",
         f"service     = installed={service_installed()} running={service_running()}",
@@ -1505,6 +1546,7 @@ def make_support_bundle():
         try:
             cfg = load_config()
             cfg.pop("tg_secret", None)
+            cfg.pop("doh_prev", None)
             z.writestr("app_config.json", json.dumps(cfg, ensure_ascii=False, indent=2))
         except Exception:
             pass
@@ -1536,81 +1578,126 @@ def doh_status():
             "provider": cfg.get("doh_provider", "cloudflare")}
 
 
-def doh_enable(provider="cloudflare"):
-    """Перевести системный DNS активных адаптеров на провайдера с DoH.
-    При первом включении сохраняет прежний DNS; при смене провайдера на лету
-    (когда DoH уже включён) прежний DNS НЕ перезахватывается."""
-    ips, tmpl = DOH_PROVIDERS.get(provider, DOH_PROVIDERS["cloudflare"])
-    ps_ips = ",".join(f"'{x}'" for x in ips)
-    cfg = load_config()
-    already = bool(cfg.get("doh_enabled"))
+def _doh_previous(value):
+    """Привести сохранённый DNS к безопасному списку IPv4-адресов.
 
-    register = (
+    В конфиге старых версий адреса хранились строкой через запятую; новый
+    формат — массив. Недопустимые значения отбрасываются до формирования PS.
+    """
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for index, servers in value.items():
+        if not str(index).isdigit() or int(index) < 1:
+            continue
+        raw = servers.split(",") if isinstance(servers, str) else servers
+        if not isinstance(raw, (list, tuple)):
+            continue
+        valid = []
+        for server in raw:
+            try:
+                ip = ipaddress.ip_address(str(server).strip())
+            except ValueError:
+                continue
+            if ip.version == 4:
+                valid.append(str(ip))
+        result[str(int(index))] = valid
+    return result
+
+
+def _ps_checked(script, action):
+    res = _ps(script)
+    if res.returncode:
+        detail = (res.stderr or res.stdout or "неизвестная ошибка Windows").strip()
+        raise RuntimeError(f"{action}: {detail}")
+    return res
+
+
+def _doh_register_script(ips, tmpl):
+    ps_ips = ",".join(f"'{x}'" for x in ips)
+    return (
+        "$ErrorActionPreference='Stop'\n"
         f"$ips=@({ps_ips}); $tmpl='{tmpl}'\n"
         "foreach($ip in $ips){ try{ Add-DnsClientDohServerAddress -ServerAddress $ip "
         "-DohTemplate $tmpl -AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction Stop }"
-        "catch{ try{ Set-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $tmpl "
-        "-AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction SilentlyContinue }catch{} } }\n"
+        "catch{ Set-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $tmpl "
+        "-AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction Stop } }\n"
     )
 
-    if already:
-        # только переустановить DNS на новый провайдер, prev не трогаем
-        script = register + (
-            "foreach($a in (Get-NetAdapter | Where-Object {$_.Status -eq 'Up'})){\n"
-            "  Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses $ips "
-            "-ErrorAction SilentlyContinue\n}\n"
-            "Clear-DnsClientCache -ErrorAction SilentlyContinue\n"
-        )
-        _ps(script)
-        update_config({"doh_provider": provider, "doh_enabled": True})
-        return True
 
-    # первое включение — захватить прежний DNS
-    script = register + (
-        "$prev=@{}\n"
-        "foreach($a in (Get-NetAdapter | Where-Object {$_.Status -eq 'Up'})){\n"
-        "  $cur=(Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 "
-        "-ErrorAction SilentlyContinue).ServerAddresses\n"
-        "  $prev[[string]$a.ifIndex]=($cur -join ',')\n"
-        "  Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses $ips "
-        "-ErrorAction SilentlyContinue\n}\n"
-        "Clear-DnsClientCache -ErrorAction SilentlyContinue\n"
-        "$prev | ConvertTo-Json -Compress"
+def doh_enable(provider="cloudflare"):
+    """Включить DoH на активных адаптерах и проверить, что DNS реально применён.
+
+    При любой ошибке PowerShell возвращает прежние адреса на уже изменённых
+    адаптерах. Настройки приложения меняются только после успешной проверки.
+    """
+    if provider not in DOH_PROVIDERS:
+        raise ValueError("Неизвестный DoH-провайдер")
+    ips, tmpl = DOH_PROVIDERS[provider]
+    cfg = load_config()
+    script = _doh_register_script(ips, tmpl) + (
+        "$prev=@{}; $changed=@()\n"
+        "try {\n"
+        "  $adapters=@(Get-NetAdapter | Where-Object {$_.Status -eq 'Up'})\n"
+        "  if($adapters.Count -eq 0){ throw 'Нет активных сетевых адаптеров' }\n"
+        "  foreach($a in $adapters){\n"
+        "    $id=[string]$a.ifIndex\n"
+        "    $prev[$id]=@((Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4).ServerAddresses)\n"
+        "    $changed += $id\n"
+        "    Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses $ips -ErrorAction Stop\n"
+        "    $actual=@((Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4).ServerAddresses)\n"
+        "    if($actual.Count -ne $ips.Count -or (Compare-Object $actual $ips)){ throw ('DNS не применён для адаптера '+$a.Name) }\n"
+        "  }\n"
+        "  Clear-DnsClientCache -ErrorAction Stop\n"
+        "  $prev | ConvertTo-Json -Compress -Depth 3\n"
+        "} catch {\n"
+        "  foreach($id in $changed){ $old=@($prev[$id]); if($old.Count){ Set-DnsClientServerAddress -InterfaceIndex $id -ServerAddresses $old -ErrorAction SilentlyContinue }else{ Set-DnsClientServerAddress -InterfaceIndex $id -ResetServerAddresses -ErrorAction SilentlyContinue } }\n"
+        "  throw\n"
+        "}\n"
     )
-    res = _ps(script)
-    prev = {}
+    res = _ps_checked(script, "Не удалось включить DoH")
+    previous = {}
     try:
         line = (res.stdout or "").strip().splitlines()
         if line:
             data = json.loads(line[-1])
             if isinstance(data, dict):
-                prev = {str(k): str(v) for k, v in data.items()}
+                previous = _doh_previous(data)
     except Exception:
-        prev = {}
-    update_config({"doh_enabled": True, "doh_provider": provider, "doh_prev": prev})
+        previous = {}
+    # При смене провайдера не затираем DNS, сохранённый до первого включения.
+    if not cfg.get("doh_enabled"):
+        update_config({"doh_enabled": True, "doh_provider": provider, "doh_prev": previous})
+    else:
+        update_config({"doh_enabled": True, "doh_provider": provider})
     return True
 
 
 def doh_disable():
-    """Восстановить прежний DNS адаптеров."""
+    """Безопасно восстановить DNS, сохранённый до включения DoH."""
     cfg = load_config()
-    prev = cfg.get("doh_prev", {}) or {}
-    lines = []
-    for idx, servers in prev.items():
-        servers = (servers or "").strip()
-        if servers:
-            ipl = ",".join(f"'{s}'" for s in servers.split(",") if s.strip())
-            lines.append(f"Set-DnsClientServerAddress -InterfaceIndex {idx} "
-                         f"-ServerAddresses {ipl} -ErrorAction SilentlyContinue")
-        else:
-            lines.append(f"Set-DnsClientServerAddress -InterfaceIndex {idx} "
-                         f"-ResetServerAddresses -ErrorAction SilentlyContinue")
-    if not lines:
-        lines.append("foreach($a in (Get-NetAdapter | Where-Object {$_.Status -eq 'Up'}))"
-                     "{ Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex "
-                     "-ResetServerAddresses -ErrorAction SilentlyContinue }")
-    lines.append("Clear-DnsClientCache -ErrorAction SilentlyContinue")
-    _ps("\n".join(lines))
+    previous = _doh_previous(cfg.get("doh_prev", {}))
+    if not previous:
+        raise RuntimeError("Нет безопасной резервной копии прежнего DNS; восстановите DNS в Windows вручную")
+    pairs = ";".join(
+        f"'{index}'=@({','.join(repr(ip) for ip in servers)})"
+        for index, servers in previous.items()
+    )
+    script = (
+        "$ErrorActionPreference='Stop'\n"
+        f"$previous=@{{{pairs}}}; $changed=@{{}}\n"
+        "try {\n"
+        "  foreach($id in $previous.Keys){\n"
+        "    $changed[$id]=@((Get-DnsClientServerAddress -InterfaceIndex $id -AddressFamily IPv4).ServerAddresses)\n"
+        "    $old=@($previous[$id]); if($old.Count){ Set-DnsClientServerAddress -InterfaceIndex $id -ServerAddresses $old -ErrorAction Stop }else{ Set-DnsClientServerAddress -InterfaceIndex $id -ResetServerAddresses -ErrorAction Stop }\n"
+        "  }\n"
+        "  Clear-DnsClientCache -ErrorAction Stop\n"
+        "} catch {\n"
+        "  foreach($id in $changed.Keys){ $current=@($changed[$id]); if($current.Count){ Set-DnsClientServerAddress -InterfaceIndex $id -ServerAddresses $current -ErrorAction SilentlyContinue }else{ Set-DnsClientServerAddress -InterfaceIndex $id -ResetServerAddresses -ErrorAction SilentlyContinue } }\n"
+        "  throw\n"
+        "}\n"
+    )
+    _ps_checked(script, "Не удалось восстановить DNS")
     update_config({"doh_enabled": False, "doh_prev": {}})
     return True
 

@@ -39,6 +39,7 @@ def main():
             patch.object(ui.ZapretApp, "_setup_tray", lambda *a: None), \
             patch.object(ui.ZapretApp, "on_start", lambda *a: None), \
             patch.object(ui.ZapretApp, "on_stop", lambda *a: None), \
+            patch.object(ui.ZapretApp, "on_health_check", lambda *a: None), \
             patch.object(ui.ZapretApp, "on_simple_fix", lambda *a: None), \
             patch.object(ui.ZapretApp, "on_tg_open", lambda *a: None), \
             patch.object(ui.ZapretApp, "on_tg_copy", lambda *a: None):
