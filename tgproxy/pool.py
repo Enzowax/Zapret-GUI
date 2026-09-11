@@ -2,6 +2,7 @@ import asyncio
 import logging
 import random
 import time
+from email.utils import parsedate_to_datetime
 
 from collections import deque
 from urllib.parse import urlencode
@@ -311,14 +312,21 @@ class _CfWorkerPool:
         return domains
 
     def report_failure(self, worker_domain: str, exc: Exception) -> None:
-        return  # TODO: check status code after daily limit reached
         if not isinstance(exc, WsHandshakeError) or exc.status_code != 429:
             return
 
         now = time.time()
         if self._exhausted_until.get(worker_domain, 0) > now:
             return
-        exhausted_until = now + (86400 - (now % 86400))
+        retry = next((str(v) for k, v in exc.headers.items() if k.lower() == 'retry-after'), '')
+        try:
+            seconds = int(retry)
+        except ValueError:
+            try:
+                seconds = parsedate_to_datetime(retry).timestamp() - now
+            except (ValueError, TypeError, OverflowError):
+                seconds = 60
+        exhausted_until = now + max(1, min(seconds, 300))
         self._exhausted_until[worker_domain] = exhausted_until
         log.warning(
             "CF worker %s reached its request limit, disabled for %d seconds", worker_domain, int(exhausted_until - now))

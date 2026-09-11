@@ -86,6 +86,7 @@ def test_service_uses_argument_list_and_checks_start(monkeypatch):
     monkeypatch.setattr(zc, "kill_winws_only", lambda: None)
     monkeypatch.setattr(zc, "enable_tcp_timestamps", lambda: None)
     monkeypatch.setattr(zc, "service_running", lambda: True)
+    monkeypatch.setattr(zc, "service_installed", lambda: False)
     def run(cmd, **kwargs):
         assert isinstance(cmd, list)
         assert not kwargs.get("shell")
@@ -94,7 +95,7 @@ def test_service_uses_argument_list_and_checks_start(monkeypatch):
     monkeypatch.setattr(zc, "run_hidden", run)
     assert zc.install_service("general", '--hostlist="C:\\a & b\\list.txt"', "off")[0]
     create = next(c for c in calls if c[:2] == ["sc", "create"])
-    assert create[4] == subprocess.list2cmdline([zc.WINWS, '--hostlist=C:\\a & b\\list.txt'])
+    assert create[4] == subprocess.list2cmdline([zc.WINWS] + zc.build_args_str('--hostlist="C:\\a & b\\list.txt"', 'off'))
     assert not any(call[:2] == ["taskkill", "/IM"] for call in calls)
     monkeypatch.setattr(zc, "service_running", lambda: False)
     assert zc.install_service("general", "--new", "off")[0] is False
@@ -132,6 +133,32 @@ def test_stop_process_only_terminates_the_tracked_child():
     assert zc.stop_process(None) is False
 
 
+def test_stop_all_winws_terminates_every_matching_process(monkeypatch):
+    calls = []
+    monkeypatch.setattr(zc, "run_hidden", lambda cmd: calls.append(cmd) or SimpleNamespace(
+        returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(zc, "winws_running", lambda: False)
+
+    assert zc.stop_all_winws() == "Все процессы winws.exe принудительно остановлены."
+    assert calls == [["taskkill", "/IM", "winws.exe", "/F"]]
+
+
+def test_stop_all_winws_reports_absence_after_taskkill(monkeypatch):
+    calls = []
+    monkeypatch.setattr(zc, "run_hidden", lambda cmd: calls.append(cmd) or SimpleNamespace(
+        returncode=128, stdout="not found", stderr=""))
+    monkeypatch.setattr(zc, "winws_running", lambda: False)
+
+    assert zc.stop_all_winws() == "Процессы winws.exe не найдены."
+    assert calls == [["taskkill", "/IM", "winws.exe", "/F"]]
+
+
+def test_apply_fix_routes_global_winws_stop(monkeypatch):
+    monkeypatch.setattr(zc, "is_admin", lambda: True)
+    monkeypatch.setattr(zc, "stop_all_winws", lambda: "done")
+    assert zc.apply_fix("stop_all_winws") == "done"
+
+
 def test_doh_updates_config_only_after_verified_powershell(config, monkeypatch):
     zc.save_config({"doh_enabled": False, "doh_provider": "cloudflare"})
     failed = SimpleNamespace(returncode=1, stdout="", stderr="access denied")
@@ -140,17 +167,21 @@ def test_doh_updates_config_only_after_verified_powershell(config, monkeypatch):
         zc.doh_enable("google")
     assert zc.doh_status() == {"enabled": False, "provider": "cloudflare"}
 
-    ok = SimpleNamespace(returncode=0, stdout='{"7":["192.168.1.1"]}\n', stderr="")
+    ok = SimpleNamespace(returncode=0, stdout=json.dumps({"7": {
+        "guid": "00000000-0000-0000-0000-000000000007", "servers": ["192.168.1.1"],
+        "automatic": True}}), stderr="")
     monkeypatch.setattr(zc, "_ps", lambda script: ok)
     assert zc.doh_enable("google") is True
     cfg = zc.load_config()
     assert cfg["doh_enabled"] and cfg["doh_provider"] == "google"
-    assert cfg["doh_prev"] == {"7": ["192.168.1.1"]}
+    assert cfg["doh_snapshot"]["7"]["servers"] == ["192.168.1.1"]
+    assert cfg["doh_snapshot"]["7"]["automatic"] is True
 
 
 def test_doh_disable_refuses_to_forget_state_when_restore_fails(config, monkeypatch):
     zc.save_config({"doh_enabled": True, "doh_provider": "cloudflare",
-                    "doh_prev": {"5": ["192.168.1.1"]}})
+                    "doh_snapshot": {"5": {"guid": "00000000-0000-0000-0000-000000000005",
+                                           "servers": ["192.168.1.1"], "automatic": True}}})
     monkeypatch.setattr(zc, "_ps", lambda script: SimpleNamespace(
         returncode=1, stdout="", stderr="adapter failed"))
     with pytest.raises(RuntimeError, match="adapter failed"):
@@ -211,10 +242,10 @@ def test_download_checks_sha256(tmp_path, monkeypatch):
 def test_update_selects_application_zip(monkeypatch):
     release = {"tag_name": "v99.0.0", "assets": [
         {"name": "sources.zip", "browser_download_url": "wrong"},
-        {"name": "ZapretControl.zip", "browser_download_url": "right", "digest": "sha256:abc"}]}
+        {"name": "ZapretControl.zip", "browser_download_url": "right", "digest": "sha256:" + "a" * 64}]}
     monkeypatch.setattr(zc.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(json.dumps(release).encode()))
     assert zc.check_update()["url"] == "right"
-    assert zc.check_update()["digest"] == "sha256:abc"
+    assert zc.check_update()["digest"] == "sha256:" + "a" * 64
 
 
 @pytest.mark.parametrize("name", ["../escape", "ZapretControl/../escape", "ZapretControl/C:bad",
@@ -226,7 +257,7 @@ def test_update_rejects_unsafe_archive(tmp_path, monkeypatch, name):
     monkeypatch.setattr(zc.sys, "frozen", True, raising=False)
     monkeypatch.setattr(zc.tempfile, "mkdtemp", lambda **k: str(tmp_path / "staging"))
     with pytest.raises(RuntimeError):
-        zc.apply_update(archive)
+        zc.apply_update(archive, expected_digest="sha256:" + zc._sha256(archive))
     assert not (tmp_path / "escape").exists()
 
 
@@ -241,11 +272,23 @@ def test_update_targets_executable_directory_not_data_directory(tmp_path, monkey
     monkeypatch.setattr(zc.tempfile, "mkdtemp", lambda **k: str(tmp_path / "staging"))
     calls = []
     monkeypatch.setattr(zc.subprocess, "Popen", lambda *a, **k: calls.append(a))
-    zc.apply_update(archive)
+    zc.apply_update(archive, expected_digest="sha256:" + zc._sha256(archive))
     script = (tmp_path / "staging/update.ps1").read_text(encoding="utf-8-sig")
     assert "install'' & %" in script
     assert "$LASTEXITCODE -ge 8" in script
     assert calls[0][0][0] == "powershell"
+
+
+@pytest.mark.parametrize("digest", ["", "sha256:" + "0" * 64])
+def test_apply_update_requires_matching_digest_before_staging(tmp_path, monkeypatch, digest):
+    archive = tmp_path / "update.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("ZapretControl/ZapretControl.exe", b"fixture")
+        z.writestr("ZapretControl/_internal/data", b"fixture")
+    monkeypatch.setattr(zc.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(zc.tempfile, "mkdtemp", lambda **k: pytest.fail("unverified archive staged"))
+    with pytest.raises(RuntimeError, match="SHA-256"):
+        zc.apply_update(archive, expected_digest=digest)
 
 
 def test_support_bundle_removes_secrets(config, tmp_path, monkeypatch):
@@ -271,25 +314,13 @@ def test_preset_tags_are_short_and_derived_from_args():
     assert zc.preset_tags({"name": "minimal", "args": ""}) == ["универсальный"]
 
 
-def test_recovery_does_not_cycle_back_to_a_failed_strategy():
-    loader = importlib.machinery.SourceFileLoader("test_zapret_recovery", str(ROOT / "zapret_app.pyw"))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    ui = importlib.util.module_from_spec(spec)
-    loader.exec_module(ui)
+def test_recovery_does_not_cycle_back_to_a_failed_strategy(monkeypatch):
+    from test_health_runtime import app_stub
+    app = app_stub(_recovery_failed={"new"})
     switched = []
-    app = SimpleNamespace(
-        cfg={"recovery_pool": ["first", "second"], "auto_research_on_fail": False},
-        active_preset_name="first", _recovery_failed=set(),
-        preset_by_name={"first": {}, "second": {}}, log_msg=lambda *a: None,
-        _notify=lambda *a: None, _switch_to=switched.append,
-        _trigger_auto_research=lambda: None, _watchdog_restart=lambda: None,
-        auto_running=False,
-    )
-    ui.ZapretApp._recover(app, switch=True)
-    assert switched == ["second"]
-    app.active_preset_name = "second"
-    ui.ZapretApp._recover(app, switch=True)
-    assert switched == ["second"]
+    app._switch_to = lambda name, *a, **kw: switched.append(name)
+    app._recover(True)
+    assert switched == []
 
 
 def test_proxy_immediate_stop_cancels_pending_tasks(config, monkeypatch):
@@ -327,6 +358,13 @@ def test_cancelled_search_does_not_overwrite_recovery_pool(config):
     for name in ("btn_apply_best", "btn_install_best", "btn_auto_start", "btn_auto_stop",
                  "btn_start", "btn_stop", "auto_phase_lbl"):
         setattr(app, name, widget)
+    from zapret_runtime import RuntimeController
+    app.runtime = RuntimeController()
+    app._auto_token = app.runtime.token
+    app._search_results = []
+    app._auto_completed = False
+    app._closing = False
+    app._ensure_page = lambda *args: None
     ui.ZapretApp._auto_done(app)
     assert zc.load_config()["recovery_pool"] == ["working"]
     assert app._auto_autoapply is False

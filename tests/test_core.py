@@ -75,20 +75,20 @@ def test_version_tuple_prerelease_and_release():
 def test_select_candidates_prefers_full_pass_by_latency():
     # полностью пробившие (score==2) идут первыми, отсортированы по задержке
     phase1 = [("A", 2, 120.0), ("B", 1, 30.0), ("C", 2, 40.0), ("D", 0, None)]
-    assert zc.select_candidates(phase1, full_score=2, max_cand=6) == ["C", "A"]
+    assert zc.select_candidates(phase1, full_score=2, max_cand=6) == ["C", "A", "B", "D"]
 
 
 def test_select_candidates_falls_back_to_partial():
     # полностью рабочих нет -> берём частичные по убыванию score, затем задержке
     phase1 = [("A", 1, 90.0), ("B", 1, 30.0), ("C", 0, None)]
-    assert zc.select_candidates(phase1, full_score=3, max_cand=6) == ["B", "A"]
+    assert zc.select_candidates(phase1, full_score=3, max_cand=6) == ["B", "A", "C"]
 
 
 def test_select_candidates_caps_and_handles_empty():
     phase1 = [(f"P{i}", 2, float(i)) for i in range(10)]
     assert zc.select_candidates(phase1, 2, max_cand=3) == ["P0", "P1", "P2"]
     assert zc.select_candidates([], 2) == []
-    assert zc.select_candidates([("X", 0, None)], 2) == []   # ноль не берём
+    assert zc.select_candidates([("X", 0, None)], 2) == ["X"]  # quick failure is not exclusion
 
 
 # --- выбор лучшей стратегии (фаза 2) ------------------------------------- #

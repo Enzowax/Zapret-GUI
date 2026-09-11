@@ -22,6 +22,7 @@ loader.exec_module(ui)
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--screenshots", action="store_true")
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "docs")
     args = parser.parse_args()
     config = {"first_run_done": True, "ui_mode": "simple", "appearance": "light",
               "accent_name": "Синяя", "tg_secret": "0" * 32}
@@ -35,6 +36,9 @@ def main():
     with patch.object(ui.zc, "load_config", lambda: dict(config)), \
             patch.object(ui.zc, "update_config", update_config), \
             patch.object(ui.zc, "current_log_path", lambda: "NUL"), \
+            patch.object(ui.zc, "service_running", lambda: False), \
+            patch.object(ui.zc, "service_installed", lambda: False), \
+            patch.object(ui.zc, "tg_proxy_stop", lambda: None), \
             patch.object(ui.ZapretApp, "_bg", lambda *a: None), \
             patch.object(ui.ZapretApp, "_setup_tray", lambda *a: None), \
             patch.object(ui.ZapretApp, "on_start", lambda *a: None), \
@@ -49,8 +53,7 @@ def main():
 
         def state():
             app._apply_status(False, False, False, "встроенный список", False)
-            for _dot, label, _name in app.health_widgets.values():
-                label.configure(text="Не проверено")
+            app._apply_health({"discord": (True, 42), "youtube": (False, None), "google": (True, 15)})
 
         def capture():
             from PIL import ImageGrab
@@ -66,7 +69,12 @@ def main():
                     app._rebuild_ui()
                     for key in app._page_builders:
                         app._ensure_page(key)
+                    while app._page_jobs:
+                        app.update()
                     state()
+                    app._rebuild_ui()
+                    assert app.health_widgets["discord"][1].cget("text") == "42 мс"
+                    assert app.health_widgets["youtube"][1].cget("text") == "Недоступен"
                     app.geometry("920x620")
                     app.update()
                     app.geometry("1120x780")
@@ -74,10 +82,11 @@ def main():
                     app._show_page("control")
                     app.update()
                     hwnd = ctypes.windll.user32.GetParent(app.winfo_id())
-                    ImageGrab.grab(window=hwnd).save(ROOT / "docs" / filename)
+                    args.output_dir.mkdir(parents=True, exist_ok=True)
+                    ImageGrab.grab(window=hwnd).save(args.output_dir / filename)
                     print(f"UI OK: {mode}, {theme}, 920x620 and 1120x780", flush=True)
             finally:
-                app.destroy()
+                app._real_quit()
 
         state()
         if args.screenshots:

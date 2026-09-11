@@ -21,6 +21,9 @@ from tkinter import ttk, messagebox, filedialog
 import customtkinter as ctk
 
 import zapret_core as zc
+from zapret_runtime import RuntimeController, Superseded
+from zapret_search import run_search
+from types import GeneratorType
 
 try:
     import pystray
@@ -143,6 +146,15 @@ class ZapretApp(ctk.CTk):
         self.presets = zc.load_presets()
         self.preset_by_name = {p["name"]: p for p in self.presets}
         self.proc = None
+        self.runtime = RuntimeController()
+        self._initial_runtime_token = self.runtime.token
+        self._status_snapshot = None
+        self._log_dirty = False
+        self._page_jobs = {}
+        self._start_busy = False
+        self._recovery_busy = False
+        self._health_snapshot = {}
+        self._health_state = "Не проверено"
         self.log_queue = queue.Queue()
         self.ui_queue = queue.Queue()
         self._status_busy = False
@@ -314,18 +326,37 @@ class ZapretApp(ctk.CTk):
                          else self._build_settings_page),
             "log": self._build_log_page,
         }
-        # Сразу строим только страницы, которые трогают фоновые обновления
-        # (статус/прокси/журнал/настройки). Остальные — лениво при первом
-        # открытии: ускоряет запуск ~в 2-3 раза. В простом режиме скрытые
-        # страницы не строим вовсе — фоновые обновления защищены _cfgw.
-        for key in (("control", "log") if simple
-                    else ("control", "tgws", "settings", "log")):
-            self.pages[key] = self._page_builders[key]()
+        # Only the visible dashboard is constructed before the first frame.
+        self.pages["control"] = self._page_builders["control"]()
 
     def _ensure_page(self, key):
         if key not in self.pages:
-            self.pages[key] = self._page_builders[key]()
+            built = self._page_builders[key]()
+            if isinstance(built, GeneratorType):
+                page = next(built)
+                self.pages[key] = page
+                self._page_jobs[key] = built
+                self.after(1, lambda: self._advance_page(key, page, built))
+            else:
+                self.pages[key] = built
+                if key == "log":
+                    self._render_log()
+            if self._status_snapshot is not None:
+                self._apply_status(*self._status_snapshot)
         return self.pages[key]
+
+    def _advance_page(self, key, page, builder):
+        if self._closing or self.pages.get(key) is not page:
+            builder.close()
+            return
+        try:
+            next(builder)
+        except StopIteration:
+            self._page_jobs.pop(key, None)
+            if self._status_snapshot is not None:
+                self._apply_status(*self._status_snapshot)
+            return
+        self.after(1, lambda: self._advance_page(key, page, builder))
 
     def _show_page(self, key):
         self._current_page = key
@@ -343,6 +374,8 @@ class ZapretApp(ctk.CTk):
             b.configure(fg_color=CARD_BG if active else "transparent",
                         text_color=ACCENT if active else TEXT)
             bar.configure(fg_color=ACCENT if active else "transparent")
+        if key == "log" and self._log_dirty:
+            self._render_log()
         if key == "diag" and not getattr(self, "_diag_loaded", False):
             self._diag_loaded = True
             self.on_diag_run()
@@ -559,6 +592,9 @@ class ZapretApp(ctk.CTk):
                 self.dash_proxy_dot, self.dash_proxy_lbl = dot, value
             else:
                 self.health_widgets[key] = (dot, value, label)
+        self._render_health()
+        ctk.CTkLabel(card, text="Задержка TLS-соединения с сайтом; не задержка голосового чата.",
+                     font=(FONT, 11), text_color=MUTED).grid(row=4, column=0, sticky="w", padx=24, pady=(0, 12))
 
     def _add_games_excl_card(self, parent):
         """Карточка «Не трогать Steam / Dota 2» с тумблером (общая для полной
@@ -1030,6 +1066,8 @@ class ZapretApp(ctk.CTk):
                     "Встроенный MTProto-прокси для Telegram (WebSocket-мост). "
                     "Отдельная программа не нужна — всё работает внутри приложения. "
                     "Запустите прокси и добавьте ссылку в Telegram.")
+        yield p
+        yield
         self._section(p, "Статус")
         c = self._card(p)
         self.tg_dot = ctk.CTkLabel(c, text="●", font=(FONT, 24), text_color=MUTED)
@@ -1040,7 +1078,9 @@ class ZapretApp(ctk.CTk):
         self.tg_sub = ctk.CTkLabel(c, text="", font=(FONT, 11), text_color=MUTED, anchor="w")
         self.tg_sub.grid(row=1, column=1, sticky="nw", pady=(0, 14))
 
+        yield
         self._section(p, "Управление")
+        yield
         c = self._card_row(p, "✈", "Встроенный прокси",
                            f"Слушает {zc.TG_DEFAULT_HOST}:{zc.tg_get_port()}")
         box = ctk.CTkFrame(c, fg_color="transparent")
@@ -1050,6 +1090,7 @@ class ZapretApp(ctk.CTk):
         self.btn_tg_stop = self._btn(box, "■  Остановить", self.on_tg_stop)
         self.btn_tg_stop.pack(side="left", padx=4)
 
+        yield
         self._section(p, "Ссылка для Telegram")
         c = self._card(p)
         self.tg_link_var = ctk.StringVar(value=zc.tg_proxy_url())
@@ -1071,7 +1112,9 @@ class ZapretApp(ctk.CTk):
                   "Добавить прокси → MTProto, и включите его.")
         ).pack(anchor="w", padx=12, pady=(6, 4))
 
+        yield
         self._section(p, "Настройки прокси")
+        yield
         c = self._card_row(p, "⚙", "Порт и секрет",
                            "Порт локального прокси и MTProto-секрет")
         box = ctk.CTkFrame(c, fg_color="transparent")
@@ -1086,6 +1129,7 @@ class ZapretApp(ctk.CTk):
         self._btn(box, "Применить", self.on_tg_apply_port, width=110).pack(side="left", padx=4)
         self._btn(box, "Сменить секрет", self.on_tg_regen, width=150).pack(side="left", padx=4)
 
+        yield
         c = self._card_row(p, "☁", "Запасной Cloudflare-прокси",
                            "Резерв через публичные Cloudflare-воркеры. Их общий пул "
                            "часто отдаёт 429 и вызывает обрывы — если Telegram и так "
@@ -1095,6 +1139,7 @@ class ZapretApp(ctk.CTk):
         if zc.tg_get_cfproxy():
             self.cfproxy_switch.select()
 
+        yield
         self._section(p, "Статистика")
         c = self._card(p)
         box = ctk.CTkFrame(c, fg_color="transparent")
@@ -1108,7 +1153,9 @@ class ZapretApp(ctk.CTk):
         self._btn(c, "Обновить", self._refresh_proxy_stats, width=110).grid(
             row=0, column=3, padx=14, pady=12)
 
+        yield
         self._section(p, "Диагностика прокси")
+        yield
         c = self._card_row(p, "📜", "Лог прокси",
                            "Журнал соединений прокси — для разбора обрывов и сбросов")
         self._btn(c, "Открыть лог", self.on_open_proxy_log, width=140).grid(
@@ -1177,6 +1224,8 @@ class ZapretApp(ctk.CTk):
         box2.grid(row=1, column=0, columnspan=3, padx=12, pady=(0, 12), sticky="w")
         self._btn(box2, "Перезапустить обход", self.on_diag_restart, width=190).pack(
             side="left", padx=4)
+        self._btn(box2, "⚠ Остановить все winws", self.on_stop_all_winws,
+                  width=210).pack(side="left", padx=4)
         self._btn(box2, "Сохранить отчёт", self.on_support_bundle, width=170).pack(
             side="left", padx=4)
 
@@ -1262,8 +1311,54 @@ class ZapretApp(ctk.CTk):
         self._bg(worker)
 
     def on_diag_restart(self):
+        if self.auto_running or self._stop_busy or self._recovery_busy:
+            return
+        token = self.runtime.request()
+        self._invalidate_health()
         self.log_msg("[Диагностика] перезапуск обхода…")
-        self._bg(self._watchdog_restart)
+        self._bg(lambda: self._watchdog_restart(token))
+
+    def on_stop_all_winws(self):
+        """Аварийно завершить все winws.exe, включая чужие экземпляры."""
+        if self._stop_busy:
+            return
+        if not messagebox.askyesno(
+                "Аварийная остановка",
+                "Будут принудительно завершены все процессы winws.exe, включая "
+                "запущенные другими программами. Продолжить?"):
+            return
+
+        self._startup_cancelled = True
+        token = self.runtime.request("stopped")
+        self.auto_cancel = True
+        self._auto_autoapply = False
+        self._stop_busy = True
+        self._invalidate_health()
+        self.log_msg("[Диагностика] аварийная остановка всех winws.exe…")
+
+        def worker():
+            try:
+                with self.runtime.transition(token):
+                    zc.stop_process(self.runtime.trial)
+                    self.runtime.trial = None
+                    try:
+                        if zc.service_running():
+                            zc.set_service_running(False)
+                    finally:
+                        self._stop_local_winws()
+                    msg = zc.stop_all_winws()
+                    zc.update_config({}, remove=("svc_stopped_for_search",))
+                    self.cfg.pop("svc_stopped_for_search", None)
+                self.log_msg(f"[Диагностика] {msg}")
+            except Superseded:
+                pass
+            except Exception as exc:
+                self.log_msg(f"[ОШИБКА аварийной остановки] {exc}")
+            finally:
+                self._stop_busy = False
+                self.post(self.refresh_status)
+
+        self._bg(worker)
 
     # -- страница: Настройки приложения ----------------------------------- #
     def _build_settings_page(self):
@@ -1271,7 +1366,10 @@ class ZapretApp(ctk.CTk):
         self._title(p, "Настройки приложения",
                     "Параметры самого приложения: обновления, оформление, трей, антивирус.")
 
+        yield p
+        yield
         self._section(p, "Обновления")
+        yield
         c = self._card_row(p, "⬆", f"Версия {zc.APP_VERSION}",
                            "Проверить и установить новую версию с GitHub")
         box = ctk.CTkFrame(c, fg_color="transparent")
@@ -1281,6 +1379,7 @@ class ZapretApp(ctk.CTk):
         self._btn(box, "Проверить", self.on_check_update, accent=True,
                   width=120).pack(side="left", padx=4)
 
+        yield
         c = self._card_row(p, "🔄", "Автопроверка обновлений",
                            "Проверять новые версии при запуске")
         self.update_switch = self._switch(c, self._on_update_toggle)
@@ -1288,7 +1387,9 @@ class ZapretApp(ctk.CTk):
         if zc.get_update_enabled():
             self.update_switch.select()
 
+        yield
         self._section(p, "Оформление")
+        yield
         c = self._card_row(p, "🌗", "Тема", "Тёмная / светлая / системная")
         self.appearance_var = ctk.StringVar(
             value={v: k for k, v in APPEARANCE.items()}.get(
@@ -1297,6 +1398,7 @@ class ZapretApp(ctk.CTk):
                   variable=self.appearance_var).grid(
             row=0, column=2, rowspan=2, padx=14, pady=12)
 
+        yield
         c = self._card_row(p, "🎨", "Акцентный цвет", "Цвет кнопок и выделения")
         self.theme_var = ctk.StringVar(
             value=self.cfg.get("accent_name") if self.cfg.get("accent_name") in THEMES
@@ -1304,12 +1406,15 @@ class ZapretApp(ctk.CTk):
         self._menu(c, list(THEMES.keys()), self.theme_var, self._on_theme_change).grid(
             row=0, column=2, rowspan=2, padx=14, pady=12)
 
+        yield
         self._section(p, "Поведение")
+        yield
         c = self._card_row(p, "📥", "Сворачивать в трей",
                            "При закрытии окна прятать в трей (обход продолжит работать)")
         self.tray_switch = self._cfg_switch(c, "minimize_to_tray", default=True)
         self.tray_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
 
+        yield
         c = self._card_row(p, "🚀", "Полный автозапуск при включении ПК",
                            "Приложение, обход и Telegram-прокси стартуют при входе "
                            "в систему (свернётся в трей)")
@@ -1318,26 +1423,32 @@ class ZapretApp(ctk.CTk):
                                         pady=12, sticky="e")
         self._sync_autostart_switch()
 
+        yield
         self._section(p, "Списки и обход")
+        yield
         c = self._card_row(p, "📃", "Автообновление списков и IPSet",
                            "Раз в неделю подтягивать свежие списки сайтов и IP-набор "
                            "(ipset-all) из upstream — чтобы обход не устаревал")
         self.lists_auto_switch = self._cfg_switch(c, "lists_auto_update")
         self.lists_auto_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
 
+        yield
         c = self._card_row(p, "🔁", "Авто-переподбор при сбое",
                            "Если все запасные стратегии перестали работать — "
                            "автоматически запустить авто-поиск и применить лучшую")
         self.research_switch = self._cfg_switch(c, "auto_research_on_fail")
         self.research_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
 
+        yield
         c = self._card_row(p, "🔔", "Уведомления",
                            "Всплывающие сообщения о событиях обхода (переключение, "
                            "восстановление, обновление списков)")
         self.notif_switch = self._cfg_switch(c, "notifications", default=True)
         self.notif_switch.grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=12, sticky="e")
 
+        yield
         self._section(p, "Антивирус")
+        yield
         c = self._card_row(p, "🛡", "Windows Defender",
                            "Добавить папку в исключения — меньше ложных срабатываний AV")
         self._btn(c, "Добавить в исключения", self.on_add_defender_exclusion,
@@ -1380,6 +1491,7 @@ class ZapretApp(ctk.CTk):
         return (not flt) or (flt in line.lower())
 
     def _render_log(self):
+        self._log_dirty = False
         # перерисовать журнал из буфера с учётом фильтра
         if not hasattr(self, "logbox"):
             return
@@ -1423,46 +1535,52 @@ class ZapretApp(ctk.CTk):
                 pass
 
     def _poll_ui(self):
-        new_count = 0
-        try:
-            while True:
-                line = self.log_queue.get_nowait().rstrip()
-                self._log_lines.append(line)
-                if len(self._log_lines) > 5000:        # ограничение памяти
-                    self._log_lines = self._log_lines[-4000:]
-                    self.post(self._render_log)
-                new_count += 1
-                if self._log_matches(line):
-                    try:
+        if self._closing:
+            return
+        lines = []
+        for _ in range(200):
+            try:
+                lines.append(self.log_queue.get_nowait().rstrip())
+            except queue.Empty:
+                break
+        if lines:
+            self._log_lines.extend(lines)
+            trimmed = len(self._log_lines) > 5000
+            if trimmed:
+                self._log_lines = self._log_lines[-4000:]
+            self._log_dirty = True
+            if self._current_page == "log" and hasattr(self, "logbox"):
+                if trimmed:
+                    self._render_log()
+                else:
+                    shown = [line for line in lines if self._log_matches(line)]
+                    if shown:
                         self.logbox.configure(state="normal")
-                        self.logbox.insert("end", line + "\n")
+                        self.logbox.insert("end", "\n".join(shown) + "\n")
                         self.logbox.see("end")
                         self.logbox.configure(state="disabled")
-                    except Exception:
-                        pass
-                if self._logf:
-                    try:
-                        self._logf.write(time.strftime("%H:%M:%S ") + line + "\n")
-                        self._logf.flush()
-                    except Exception:
-                        pass
-        except queue.Empty:
-            pass
-        if new_count and hasattr(self, "log_count_lbl"):
-            try:
-                self.log_count_lbl.configure(text=f"{len(self._log_lines)} строк")
-            except Exception:
-                pass
-        try:
-            while True:
-                fn = self.ui_queue.get_nowait()
+                    self._cfgw("log_count_lbl", text=f"{len(self._log_lines)} строк")
+                    self._log_dirty = False
+            if self._logf:
                 try:
-                    fn()
-                except Exception:
+                    prefix = time.strftime("%H:%M:%S ")
+                    self._logf.write("".join(prefix + line + "\n" for line in lines))
+                    self._logf.flush()
+                except OSError:
                     pass
-        except queue.Empty:
-            pass
-        self.after(100, self._poll_ui)
+        deadline = time.perf_counter() + 0.008
+        for _ in range(30):
+            if time.perf_counter() >= deadline:
+                break
+            try:
+                fn = self.ui_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                fn()
+            except Exception as exc:
+                self.log_msg(f"[Интерфейс] {exc}")
+        self.after(10 if not self.ui_queue.empty() or not self.log_queue.empty() else 100, self._poll_ui)
 
     def clear_log(self):
         self._log_lines = []
@@ -1485,16 +1603,24 @@ class ZapretApp(ctk.CTk):
         self._status_busy = True
 
         def worker():
-            installed = zc.service_installed()
-            svc_run = zc.service_running() if installed else False
-            running = bool(self.proc and self.proc.poll() is None) or svc_run
-            ipset = zc.get_ipset_status()
-            tg = zc.tg_proxy_running()
-            self.post(lambda: self._apply_status(running, installed, svc_run, ipset, tg))
+            try:
+                installed = zc.service_installed()
+                svc_run = zc.service_running() if installed else False
+                running = bool(self.proc and self.proc.poll() is None) or svc_run
+                ipset = zc.get_ipset_status()
+                tg = zc.tg_proxy_running()
+                if svc_run:
+                    self.runtime.request("service", expected=self._initial_runtime_token)
+                self.post(lambda: self._apply_status(running, installed, svc_run, ipset, tg))
+            except Exception as exc:
+                self.log_msg(f"[Статус] {exc}")
+            finally:
+                self._status_busy = False
 
         self._bg(worker)
 
     def _apply_status(self, running, installed, svc_run, ipset, tg):
+        self._status_snapshot = (running, installed, svc_run, ipset, tg)
         self._status_busy = False
         if running:
             self.ctl_dot.configure(text_color=GREEN)
@@ -1514,9 +1640,10 @@ class ZapretApp(ctk.CTk):
         if installed:
             sub += f"   ·   служба: {'работает' if svc_run else 'установлена'}"
         self.ctl_status_sub.configure(text=sub)
-        busy = self.auto_running or self._stop_busy
+        busy = self.auto_running or self._stop_busy or self._start_busy
         self.btn_start.configure(state="disabled" if running or busy else "normal")
-        self.btn_stop.configure(state="normal" if running and not busy else "disabled")
+        can_stop = running or self.auto_running or self._start_busy or self.runtime.desired != "stopped"
+        self.btn_stop.configure(state="normal" if can_stop and not self._stop_busy else "disabled")
         self._cfgw("ipset_label", text=f"IPSet: {ipset}")
         if installed:
             self._cfgw("svc_label", text="работает" if svc_run else "остановлена",
@@ -1570,46 +1697,47 @@ class ZapretApp(ctk.CTk):
             self._cfgw("preset_hint", text="Метки: " + " · ".join(zc.preset_tags(preset)))
 
     def on_start(self):
-        if self.auto_running:
+        if self.auto_running or self._stop_busy or self._start_busy:
             return
-        self._recovery_failed.clear()
-        if self._stop_busy:
-            # Асинхронная остановка ещё ждёт свой процесс; повторный запуск
-            # до её завершения дал бы два экземпляра winws.
-            self.log_msg("Подождите: идёт остановка обхода…")
-            return
-        if not os.path.exists(zc.WINWS):
-            messagebox.showerror("Zapret", f"Не найден winws.exe:\n{zc.WINWS}")
-            return
-        if zc.service_running():
-            messagebox.showwarning("Zapret", "Служба zapret уже запущена. "
-                                   "Удалите службу, чтобы запускать обход вручную.")
+        if self.proc and self.proc.poll() is None:
+            self.log_msg("Обход уже запущен.")
             return
         preset = self._selected_preset()
         if not preset:
             return
-        if zc.winws_running():
-            messagebox.showwarning(
-                "Zapret",
-                "Обнаружен winws.exe, запущенный не этим окном. Остановите его вручную "
-                "или через программу, которая его запустила, затем повторите попытку.")
-            return
         mode = zc.get_game_mode()
         args = zc.build_args_str(preset["args"], mode)
         if not args:
-            messagebox.showerror("Zapret", "Не удалось разобрать аргументы пресета.")
             return
-        zc.enable_tcp_timestamps()
-        self._on_strategy_pick()
-        self.log_msg(f"--- Запуск пресета: {preset['name']} (фильтр игр: {mode}) ---")
-        try:
-            self._spawn_winws(args, preset["name"])
-        except Exception as e:
-            self.log_msg(f"[ОШИБКА] {e}")
-            messagebox.showerror("Zapret", f"Не удалось запустить winws.exe:\n{e}")
-            return
-        self.log_msg("winws.exe запущен.")
-        self.after(700, self.refresh_status)
+        token = self.runtime.request("manual")
+        self._recovery_failed.clear()
+        self._start_busy = True
+        self._invalidate_health()
+        self._cfgw("btn_start", state="disabled", text="Запускаю…")
+        def worker():
+            try:
+                with self.runtime.transition(token):
+                    if zc.service_running() or zc.winws_running():
+                        self.runtime.set_desired(token, "service" if zc.service_running() else "stopped")
+                        raise RuntimeError("Обход уже запущен службой или другой программой.")
+                    self.runtime.check(token)
+                    self.active_args, self.active_preset_name = args, preset["name"]
+                    zc.enable_tcp_timestamps()
+                    self.runtime.check(token)
+                    self._spawn_winws(args, preset["name"])
+                    self.cfg["strategy"] = preset["name"]
+                    zc.update_config({"strategy": preset["name"]})
+                self.log_msg(f"Запущена стратегия «{preset['name']}».")
+            except Superseded:
+                pass
+            except Exception as exc:
+                self.log_msg(f"[Запуск] {exc}")
+            finally:
+                self._start_busy = False
+                self.post(lambda: self._cfgw("btn_start", state="normal", text="Запустить обход"))
+                self.post(self.refresh_status)
+                self.post(self.on_health_check)
+        self._bg(worker)
 
     def _spawn_winws(self, args, name=None):
         """Запустить winws с чтением вывода в журнал и запомнить, что работает
@@ -1648,37 +1776,40 @@ class ZapretApp(ctk.CTk):
         self.post(self.refresh_status)
 
     def on_stop(self):
+        self._startup_cancelled = True
         if self._stop_busy:
             return
+        token = self.runtime.request("stopped")
+        self.auto_cancel = True
+        self._auto_autoapply = False
         self._stop_busy = True
+        self._invalidate_health()
         self.log_msg("--- Остановка обхода ---")
-        try:
-            self.btn_start.configure(state="disabled")
-            self.btn_stop.configure(state="disabled")
-        except Exception:
-            pass
-
         def worker():
             try:
-                if zc.service_installed():
-                    zc.run_hidden(["net", "stop", zc.SERVICE_NAME])
-                self._stop_local_winws()
+                with self.runtime.transition(token):
+                    zc.stop_process(self.runtime.trial)
+                    self.runtime.trial = None
+                    try:
+                        if zc.service_running():
+                            zc.set_service_running(False)
+                    finally:
+                        self._stop_local_winws()
+                    zc.update_config({}, remove=("svc_stopped_for_search",))
+                    self.cfg.pop("svc_stopped_for_search", None)
                 self.log_msg("Обход остановлен.")
+            except Superseded:
+                pass
+            except Exception as exc:
+                self.log_msg(f"[ОШИБКА остановки] {exc}")
             finally:
                 self._stop_busy = False
-
-                def done():
-                    try:
-                        self.btn_start.configure(state="normal")
-                        self.btn_stop.configure(state="normal")
-                    except Exception:
-                        pass
-                    self.refresh_status()
-                self.post(done)
-
+                self.post(self.refresh_status)
         self._bg(worker)
 
     def on_install_service(self):
+        if self.auto_running or self._stop_busy:
+            return
         preset = self._selected_preset()
         if not preset:
             return
@@ -1686,11 +1817,22 @@ class ZapretApp(ctk.CTk):
                                    "как службу автозапуска?"):
             return
         mode = zc.get_game_mode()
+        token = self.runtime.request("service")
         self.log_msg(f"--- Установка службы из «{preset['name']}» ---")
 
         def worker():
-            self._stop_local_winws()
-            ok, log = zc.install_service(preset["name"], preset["args"], mode)
+            try:
+                with self.runtime.transition(token):
+                    self._stop_local_winws()
+                    self.runtime.check(token)
+                    ok, log = zc.install_service(preset["name"], preset["args"], mode,
+                                                 cancelled=lambda: not self.runtime.valid(token))
+                    self.runtime.check(token)
+            except Superseded:
+                return
+            except Exception as exc:
+                self.log_msg(f"[Служба] {exc}")
+                return
             if log:
                 self.log_msg(log)
             if ok:
@@ -1706,15 +1848,21 @@ class ZapretApp(ctk.CTk):
         self._bg(worker)
 
     def on_remove_service(self):
+        if self.auto_running or self._stop_busy:
+            return
         if not zc.service_installed():
             messagebox.showinfo("Zapret", "Служба не установлена.")
             return
         self.log_msg("--- Удаление службы ---")
+        token = self.runtime.request("stopped")
 
         def worker():
-            zc.remove_service()
-            self.proc = None
-            self.log_msg("Служба удалена.")
+            try:
+                with self.runtime.transition(token):
+                    zc.remove_service()
+                self.log_msg("Служба удалена.")
+            except Exception as exc:
+                self.log_msg(f"[Служба] {exc}")
             self.post(self.refresh_status)
 
         self._bg(worker)
@@ -1740,23 +1888,24 @@ class ZapretApp(ctk.CTk):
 
     # -- авто-восстановление (watchdog) ----------------------------------- #
     def _startup_service_restore(self):
-        """Если прошлый сеанс остановил службу на время авто-поиска и не успел
-        вернуть (приложение закрыли/оно упало посреди поиска) — поднять её."""
-        if not self.cfg.get("svc_stopped_for_search"):
+        if self._closing or getattr(self, "_startup_cancelled", False) or not self.cfg.get("svc_stopped_for_search"):
             return
-
+        token = self.runtime.request("service")
         def worker():
-            if zc.service_installed() and not zc.service_running():
-                self.log_msg("Служба zapret осталась остановленной после "
-                             "прерванного поиска — запускаю обратно…")
-                zc.run_hidden(["net", "start", zc.SERVICE_NAME])
-                self.post(self.refresh_status)
-            self.cfg.pop("svc_stopped_for_search", None)
-            zc.update_config({}, remove=("svc_stopped_for_search",))
-
+            try:
+                with self.runtime.transition(token):
+                    zc.set_service_running(True)
+                    self.runtime.check(token)
+                    self.cfg.pop("svc_stopped_for_search", None)
+                    zc.update_config({}, remove=("svc_stopped_for_search",))
+            except Exception as exc:
+                self.log_msg(f"[Восстановление службы] {exc}")
+            self.post(self.refresh_status)
         self._bg(worker)
 
     def _autostart_bypass(self):
+        if self._closing or getattr(self, "_startup_cancelled", False):
+            return
         if zc.service_running():
             self.log_msg("Обход уже обеспечивает служба zapret.")
             return
@@ -1781,144 +1930,189 @@ class ZapretApp(ctk.CTk):
         self._autostart_proxy()
 
     def _watchdog_loop(self):
-        # фоновая проверка раз в WATCHDOG_INTERVAL; работает и для ручного запуска,
-        # и для службы. При отказе текущей стратегии — переключение на следующую
-        # рабочую из пула.
-        fails = 0
+        failures, healthy = {}, 0
+        network = None
+        episode_token = self.runtime.token
         while not self._closing:
-            for _ in range(int(zc.WATCHDOG_INTERVAL * 4)):
-                if self._closing:
-                    return
-                time.sleep(0.25)
-            if self._closing:
+            token = self.runtime.token
+            if token is not episode_token:
+                failures, healthy = {}, 0
+                episode_token = token
+            if not self.runtime.wait(token, zc.WATCHDOG_INTERVAL):
+                continue
+            try:
+                if not self.cfg.get("auto_recovery") or self.auto_running or self.runtime.busy or self._stop_busy:
+                    failures, healthy = {}, 0
+                    continue
+                if self.runtime.desired == "stopped":
+                    continue
+                current_network = zc.network_identity()
+                if current_network != network:
+                    token = self.runtime.request(expected=token)
+                    if token is None:
+                        continue
+                    self.post(self._invalidate_health)
+                    network = current_network
+                    self._recovery_failed.clear()
+                    failures, healthy = {}, 0
+                    episode_token = token
+                if not self._managed_bypass_running():
+                    self._recover(False, token)
+                    continue
+                services = self.cfg.get("recovery_services") or ["discord", "youtube"]
+                hosts = {key: zc.AUTO_QUICK_HOST[key] for key in services if key in zc.AUTO_QUICK_HOST}
+                results = zc.check_hosts(list(hosts.values()), 3, 1)
+                if not self.runtime.valid(token):
+                    continue
+                failures = {key: 0 if results[host][0] else failures.get(key, 0) + 1
+                            for key, host in hosts.items()}
+                if all(results[h][0] for h in hosts.values()):
+                    healthy += 1
+                    if healthy >= 2:
+                        self._recovery_failed.clear()
+                else:
+                    healthy = 0
+                if any(n >= zc.WATCHDOG_FAIL_THRESHOLD for n in failures.values()):
+                    if not any(results[h][0] for h in hosts.values()):
+                        controls = zc.check_hosts(["www.microsoft.com", "www.cloudflare.com"], 3, 1)
+                        if not any(ok for ok, _ in controls.values()):
+                            self.log_msg("[watchdog] Нет подтверждения доступа к интернету; перебор приостановлен.")
+                            continue
+                    self._recover(True, token)
+                    failures = {}
+            except Superseded:
+                continue
+            except Exception as exc:
+                self.log_msg(f"[watchdog] Ошибка: {exc}")
+
+    def _recovery_hosts(self):
+        services = self.cfg.get("recovery_services") or ["discord", "youtube"]
+        return [h for key in services if key in zc.AUTO_TARGETS for h in zc.AUTO_TARGETS[key]]
+
+    def _watchdog_restart(self, token=None):
+        token = token or self.runtime.token
+        with self.runtime.transition(token):
+            if self.runtime.desired == "stopped":
+                return False
+            if self.runtime.desired == "service":
+                zc.set_service_running(False)
+                self.runtime.check(token)
+                zc.set_service_running(True)
+            elif self.active_args:
+                self._stop_local_winws(clear=False)
+                self.runtime.check(token)
+                self._spawn_winws(self.active_args, self.active_preset_name)
+            else:
+                return False
+        if not self.runtime.wait(token, zc.FULL_WAIT):
+            return False
+        results = zc.check_hosts(self._recovery_hosts(), 3, 1)
+        self.runtime.check(token)
+        return self._managed_bypass_running() and all(ok for ok, _ in results.values())
+
+    def _recover(self, switch, token=None):
+        self._recovery_busy = True
+        self.post(self._invalidate_health)
+        try:
+            return self._recover_impl(switch, token)
+        finally:
+            self._recovery_busy = False
+            self.post(self.on_health_check)
+
+    def _recover_impl(self, switch, token=None):
+        token = token or self.runtime.token
+        if self.runtime.desired == "stopped":
+            return
+        self.runtime.check(token)
+        if switch:
+            original = self.active_preset_name or self.cfg.get("strategy")
+            pool = self.cfg.get("recovery_pool", []) or []
+            candidates = [n for n in pool if n in self.preset_by_name
+                          and n != original and n not in self._recovery_failed]
+            if self.cfg.get("auto_research_on_fail"):
+                candidates += [p["name"] for p in self.presets if p["name"] not in candidates
+                               and p["name"] != original and p["name"] not in self._recovery_failed]
+            if original not in self.preset_by_name:
+                self.log_msg("[watchdog] Неизвестна исходная стратегия; автоматическая смена отложена.")
+                return
+            for name in candidates:
+                self.runtime.check(token)
+                committed = False
+                try:
+                    if self._switch_to(name, token, persist=False):
+                        results = zc.measure_hosts(self._recovery_hosts(), 3, 3,
+                                                   lambda: not self.runtime.valid(token))
+                        self.runtime.check(token)
+                        if results and not any(r.successes for r in results.values()):
+                            controls = zc.check_hosts(["www.microsoft.com", "www.cloudflare.com"], 3, 1)
+                            self.runtime.check(token)
+                            if not any(ok for ok, _ in controls.values()):
+                                self.log_msg("[watchdog] Связь пропала во время проверки; перебор приостановлен.")
+                                return  # finally restores the original strategy, without blacklisting.
+                        if self._managed_bypass_running() and all(r.reliable for r in results.values()):
+                            self.cfg["strategy"] = name
+                            zc.update_config({"strategy": name})
+                            self.post(lambda n=name: self.strategy_var.set(n))
+                            committed = True
+                            self._notify("Обход восстановлен", f"Проверена стратегия «{name}».")
+                            return
+                except Superseded:
+                    raise
+                except Exception as exc:
+                    self.log_msg(f"[watchdog] {name}: {exc}")
+                finally:
+                    if self.runtime.valid(token) and not committed:
+                        if not self._switch_to(original, token, persist=False):
+                            raise RuntimeError("Не удалось восстановить исходную стратегию")
+                self._recovery_failed.add(name)
+            self.log_msg("[watchdog] Подходящая замена не найдена; исходная стратегия сохранена.")
+            return
+        if getattr(self, "_restart_exhausted", None) is token:
+            return
+        for delay in (5, 15, 45):
+            if not self.runtime.wait(token, delay):
                 return
             try:
-                if not self.cfg.get("auto_recovery") or self.auto_running \
-                        or self._stop_busy:
-                    fails = 0
-                    continue
-
-                manual = bool(self.proc and self.proc.poll() is None)
-                proc_dead = bool(self.proc is not None and self.proc.poll() is not None)
-                service = zc.service_running()
-
-                if not manual and not service:
-                    fails = 0
-                    if proc_dead:   # мы запускали процесс, а он умер
-                        self.log_msg("[watchdog] winws.exe не работает — перезапуск")
-                        self._notify("Обход перезапущен", "winws.exe был перезапущен.")
-                        self._recover(switch=False)
-                    continue
-
-                if not self.active_preset_name:   # для службы берём из конфига
-                    self.active_preset_name = self.cfg.get("strategy")
-
-                res = zc.check_hosts(zc.WATCHDOG_HEALTH_HOSTS, 3.0, attempts=1)
-                ok = sum(1 for h in zc.WATCHDOG_HEALTH_HOSTS if res[h][0])
-                if ok == 0:
-                    fails += 1
-                    self.log_msg(f"[watchdog] цели недоступны ({fails}/{zc.WATCHDOG_FAIL_THRESHOLD})")
-                    if fails >= zc.WATCHDOG_FAIL_THRESHOLD:
-                        self._recover(switch=True)
-                        fails = 0
-                else:
-                    fails = 0
-            except Exception as e:
-                # одно упавшее исключение не должно убивать весь watchdog-поток
-                self.log_msg(f"[watchdog] ошибка проверки: {e}")
-                fails = 0
-
-    def _watchdog_restart(self):
-        # перезапуск текущей стратегии (служба или ручной режим)
-        if zc.service_installed() and not (self.proc and self.proc.poll() is None):
-            zc.run_hidden(["net", "stop", zc.SERVICE_NAME])
-            zc.run_hidden(["net", "start", zc.SERVICE_NAME])
-            self.post(self.refresh_status)
-            return
-        if not self.active_args:
-            return
-        try:
-            self._stop_local_winws(clear=False)
-            time.sleep(1.0)
-            self._spawn_winws(self.active_args)
-            self.post(self.refresh_status)
-        except Exception as e:
-            self.log_msg(f"[watchdog] не удалось перезапустить: {e}")
-
-    def _recover(self, switch):
-        """Переключиться на следующую рабочую стратегию из пула (switch=True)
-        либо перезапустить текущую (switch=False)."""
-        if switch:
-            pool = self.cfg.get("recovery_pool", []) or []
-            if self.active_preset_name:
-                self._recovery_failed.add(self.active_preset_name)
-            cands = [n for n in pool
-                     if n in self.preset_by_name and n not in self._recovery_failed]
-            if cands:
-                self.log_msg(f"[watchdog] «{self.active_preset_name}» не работает — "
-                             f"переключаюсь на «{cands[0]}»")
-                self._notify("Обход переключён",
-                             f"«{self.active_preset_name}» не пробивал — включил «{cands[0]}».")
-                self._switch_to(cands[0])
+                if self._watchdog_restart(token):
+                    self._notify("Обход восстановлен", "Запуск и доступность сервисов подтверждены.")
+                    return
+            except Superseded:
                 return
-            self.log_msg("[watchdog] запасные стратегии исчерпаны")
-            # пул исчерпан и связи нет: если разрешено — авто-переподбор стратегии
-            if self.cfg.get("auto_research_on_fail") and not self.auto_running:
-                self._trigger_auto_research()
-                return
-        self._watchdog_restart()
+            except Exception as exc:
+                self.log_msg(f"[watchdog] Перезапуск: {exc}")
+        self._restart_exhausted = token
+        self._notify("Не удалось восстановить обход", "Три попытки не удались. Проверьте подключение и журнал.")
 
-    def _trigger_auto_research(self):
-        """Запустить авто-поиск из watchdog (связь уже мертва — не мешаем сессии)
-        и автоматически применить найденную лучшую стратегию."""
-        if self.auto_running:
-            return
-        self._auto_autoapply = True
-        self.log_msg("[watchdog] запасные стратегии исчерпаны — запускаю авто-поиск…")
-        self._notify("Авто-поиск", "Обход перестал работать — подбираю новую стратегию.")
-        # страница авто-поиска может быть ещё не построена (ленивая) — строим
-        self.post(lambda: (self._ensure_page("auto"), self.on_auto_start()))
-
-    def _switch_to(self, name):
+    def _switch_to(self, name, token=None, persist=True):
+        token = token or self.runtime.token
         preset = self.preset_by_name.get(name)
-        if not preset:
-            self._watchdog_restart()
-            return
-        mode = zc.get_game_mode()
-
-        # режим службы — переустановить службу с новым пресетом
-        if zc.service_installed() and not (self.proc and self.proc.poll() is None):
-            ok, log = zc.install_service(name, preset["args"], mode)
-            if ok:
-                self.active_preset_name = name
+        if not preset or self.runtime.desired == "stopped":
+            return False
+        args = zc.build_args_str(preset["args"], zc.get_game_mode())
+        self.post(self._invalidate_health)
+        with self.runtime.transition(token):
+            if self.runtime.desired == "service":
+                ok, log = zc.install_service(name, preset["args"], zc.get_game_mode(),
+                                             cancelled=lambda: not self.runtime.valid(token))
+                if not ok:
+                    raise RuntimeError(log)
+                self.active_args, self.active_preset_name = args, name
+            else:
+                self._stop_local_winws(clear=False)
+                self.runtime.check(token)
+                self._spawn_winws(args, name)
+            self.runtime.check(token)
+            if persist:
                 self.cfg["strategy"] = name
-                zc.update_config({"strategy": self.cfg["strategy"]})
+                zc.update_config({"strategy": name})
                 self.post(lambda: self.strategy_var.set(name))
-            self.post(self.refresh_status)
-            if log:
-                self.log_msg(log)
-            self.log_msg(f"Служба переустановлена со стратегией «{name}»."
-                         if ok else "[ОШИБКА] не удалось переустановить службу")
-            return
+        if not self.runtime.wait(token, zc.FULL_WAIT):
+            return False
+        self.post(self.refresh_status)
+        if persist:
+            self.post(self.on_health_check)
+        return self._managed_bypass_running()
 
-        # ручной режим
-        args = zc.build_args_str(preset["args"], mode)
-        if not args:
-            self._watchdog_restart()
-            return
-        try:
-            self._stop_local_winws(clear=False)
-            time.sleep(1.0)
-            self.log_msg(f"--- Запуск пресета: {name} (переключение) ---")
-            self._spawn_winws(args, name)
-            self.cfg["strategy"] = name
-            zc.update_config({"strategy": self.cfg["strategy"]})
-            self.post(lambda: self.strategy_var.set(name))
-            self.post(self.refresh_status)
-        except Exception as e:
-            self.log_msg(f"[watchdog] не удалось переключиться: {e}")
-
-    # -- отчёт / логи ----------------------------------------------------- #
     def on_support_bundle(self):
         self.log_msg("Сбор отчёта поддержки…")
 
@@ -1964,6 +2158,9 @@ class ZapretApp(ctk.CTk):
     def _rebuild_ui(self):
         """Пересобрать сайдбар и страницы под новый акцент (на месте, без
         перезапуска процесса). Динамика восстанавливается после пересборки."""
+        for builder in self._page_jobs.values():
+            builder.close()
+        self._page_jobs.clear()
         cur = getattr(self, "_current_page", "control")
         for attr in ("_sidebar", "container"):
             w = getattr(self, attr, None)
@@ -1983,11 +2180,22 @@ class ZapretApp(ctk.CTk):
                      "simple_fix_btn", "simple_fix_lbl"):
             if hasattr(self, attr):
                 delattr(self, attr)
+        for attr in ("logbox", "log_filter_var", "log_count_lbl", "tree"):
+            if hasattr(self, attr):
+                delattr(self, attr)
         self._diag_loaded = False        # пересобранная диагностика авто-обновится
         self._init_ttk_style()
         self._build_layout()
+        if self.auto_running or getattr(self, "_search_results", []):
+            self._ensure_page("auto")
+            counts = {key: len(zc.AUTO_TARGETS[key]) for key in self._auto_services}
+            for result in self._search_results:
+                self._auto_add_row(result.name, result.per_service, result.total, result.latency_ms, counts)
+            self.btn_auto_start.configure(state="disabled" if self.auto_running else "normal")
+            self.btn_auto_stop.configure(state="normal" if self.auto_running else "disabled")
         self._show_page(cur)
-        self._render_log()
+        if self._status_snapshot is not None:
+            self._apply_status(*self._status_snapshot)
         self.refresh_status()
         self._set_diag_badge(getattr(self, "_diag_bad_count", 0))   # вернуть бейдж
 
@@ -2164,45 +2372,65 @@ class ZapretApp(ctk.CTk):
 
     # -- здоровье обхода -------------------------------------------------- #
     def on_health_check(self):
-        if getattr(self, "_health_busy", False):
+        if self._health_busy or self._closing or self.auto_running or self._stop_busy or self.runtime.busy or self._recovery_busy:
             return
         self._health_busy = True
-        self._cfgw("btn_health_check", state="disabled", text="Проверяю…")
+        self._health_token = self.runtime.token
+        self._health_state = "Проверяется"
+        self._render_health()
         self._bg(self._health_worker)
 
     def _health_worker(self):
+        token = self._health_token
         try:
-            hosts = {k: zc.AUTO_QUICK_HOST[k] for k in self.health_widgets}
-            res = zc.check_hosts(list(hosts.values()), 3.0, attempts=1)
-            out = {k: res.get(h, (False, None)) for k, h in hosts.items()}
-            self.post(lambda o=out: self._apply_health(o))
-        except Exception as e:
-            self.post(lambda detail=str(e): self._apply_health_failure(detail))
-        finally:
-            self._health_busy = False
+            hosts = {k: zc.AUTO_QUICK_HOST[k] for k in ("discord", "youtube", "google")}
+            results = zc.check_hosts(list(hosts.values()), 3, attempts=1)
+            out = {k: results[h] for k, h in hosts.items()}
+            self.post(lambda: self._finish_health(token, out))
+        except Exception as exc:
+            self.post(lambda detail=str(exc): self._finish_health(token, None, detail))
+
+    def _finish_health(self, token, out, error=None):
+        self._health_busy = False
+        if not self.runtime.valid(token) or self.auto_running or self.runtime.busy or self._recovery_busy:
+            self._invalidate_health()
+            return
+        if error:
+            self._apply_health_failure(error)
+        else:
+            self._apply_health(out)
+
+    def _invalidate_health(self):
+        self._health_state = "Устарело"
+        self._health_summary = "Нужна новая проверка"
+        self._render_health()
+
+    def _render_health(self):
+        self._cfgw("health_summary_lbl", text=self._health_summary)
+        self._cfgw("btn_health_check", state="disabled" if self._health_busy else "normal",
+                   text="Проверяю…" if self._health_busy else "Проверить связь")
+        for key, (dot, value, _) in getattr(self, "health_widgets", {}).items():
+            ok, ms = self._health_snapshot.get(key, (False, None))
+            fresh = self._health_state == "Готово"
+            dot.configure(text_color=(GREEN if ok else RED) if fresh else MUTED)
+            text = (f"{round(ms)} мс" if ms is not None else "Доступен") if ok else "Недоступен"
+            value.configure(text=text if fresh else self._health_state)
 
     def _apply_health(self, out):
+        self._health_busy = False
+        self._health_snapshot = dict(out)
+        self._health_state = "Готово"
         self._health_checked_at = time.time()
-        available = sum(1 for ok, _ in out.values() if ok)
-        self._health_summary = (f"Проверено {time.strftime('%H:%M')} · "
-                                f"{available}/{len(out)} доступны")
-        self._cfgw("health_summary_lbl", text=self._health_summary)
-        self._cfgw("btn_health_check", state="normal", text="Проверить связь")
-        for k, (ok, ms) in out.items():
-            if k not in self.health_widgets:
-                continue
-            dot, txt, label = self.health_widgets[k]
-            dot.configure(text_color=GREEN if ok else RED)
-            if ok:
-                txt.configure(text=f"{int(ms)} мс" if ms is not None else "Доступен")
-            else:
-                txt.configure(text="Нет связи")
+        available = sum(ok for ok, _ in out.values())
+        self._health_summary = f"TLS · {available}/{len(out)} · {time.strftime('%H:%M')}"
+        self._render_health()
         self.refresh_status()
 
     def _apply_health_failure(self, detail):
+        self._health_busy = False
+        self._health_state = "Ошибка проверки"
         self._health_summary = "Проверка связи не удалась"
-        self._cfgw("health_summary_lbl", text=self._health_summary)
-        self._cfgw("btn_health_check", state="normal", text="Проверить связь")
+        self._render_health()
         self.log_msg(f"[Проверка связи] {detail}")
         self.refresh_status()
 
@@ -2255,6 +2483,10 @@ class ZapretApp(ctk.CTk):
             pass
 
     def on_update_lists(self, silent=False, restart_if_running=False, include_ipset=False):
+        if self.auto_running or self._recovery_busy:
+            self.log_msg("Обновление списков отложено до завершения проверки стратегий.")
+            return
+        token = self.runtime.token
         if not silent:
             self.log_msg("Обновление списков доменов из upstream…")
 
@@ -2276,7 +2508,10 @@ class ZapretApp(ctk.CTk):
                 if restart_if_running and (
                         (self.proc and self.proc.poll() is None) or zc.service_running()):
                     self.log_msg("Перезапуск обхода для применения обновлений…")
-                    self._watchdog_restart()
+                    restart_token = self.runtime.request(expected=token)
+                    if restart_token is not None:
+                        self.post(self._invalidate_health)
+                        self._watchdog_restart(restart_token)
 
         self._bg(worker)
 
@@ -2343,6 +2578,10 @@ class ZapretApp(ctk.CTk):
         if not info.get("url"):
             messagebox.showwarning("Обновление", msg + "В релизе нет архива (.zip).")
             return
+        if not info.get("digest"):
+            messagebox.showwarning("Обновление", msg + "Нет контрольной суммы. Откройте релиз для ручной установки.")
+            self._open_link(zc.GITHUB_RELEASES_PAGE)
+            return
         if messagebox.askyesno("Обновление", msg + "Скачать и установить сейчас?"):
             self._do_update(info["url"], info.get("size", 0), info.get("digest", ""))
 
@@ -2367,7 +2606,7 @@ class ZapretApp(ctk.CTk):
             try:
                 zc.download_update(url, dest, progress_cb=prog, expected_size=size, expected_digest=digest)
                 self.log_msg("Загрузка завершена. Установка и перезапуск…")
-                zc.apply_update(dest)
+                zc.apply_update(dest, expected_digest=digest)
                 self.post(self._quit_for_update)
             except Exception as e:
                 self._update_busy = False
@@ -2482,6 +2721,17 @@ class ZapretApp(ctk.CTk):
 
     def _on_doh_toggle(self):
         on = bool(self.doh_switch.get())
+        legacy_mode = None
+        cfg = zc.load_config()
+        if not on and not cfg.get("doh_snapshot") and cfg.get("doh_prev"):
+            choice = messagebox.askyesnocancel(
+                "Восстановление DNS", "Старая версия сохранила адреса DNS, но не способ их получения.\n\n"
+                "Да — получать DNS автоматически (DHCP).\nНет — вернуть сохранённые адреса вручную.\n"
+                "Отмена — оставить настройки без изменений.")
+            if choice is None:
+                self._restore_doh_controls()
+                return
+            legacy_mode = "automatic" if choice else "static"
         prov = {"Cloudflare": "cloudflare", "Google": "google"}[self.doh_provider.get()]
         self.log_msg(("Включаю" if on else "Выключаю") + " шифрованный DNS (DoH)…")
         self.doh_switch.configure(state="disabled")
@@ -2492,7 +2742,7 @@ class ZapretApp(ctk.CTk):
                     zc.doh_enable(prov)
                     self.log_msg(f"DoH включён ({prov}): системный DNS переведён на провайдера.")
                 else:
-                    zc.doh_disable()
+                    zc.doh_disable(legacy_mode=legacy_mode)
                     self.log_msg("DoH выключен: прежний DNS восстановлен.")
             except Exception as e:
                 self.log_msg(f"[ОШИБКА] DNS: {e}")
@@ -2570,10 +2820,17 @@ class ZapretApp(ctk.CTk):
         if not self.presets:
             messagebox.showwarning("Авто-поиск", "Не найдено ни одного пресета.")
             return
+        self._previous_search = (list(getattr(self, "_search_results", [])),
+                                 list(getattr(self, "_auto_services", [])), self.auto_total_targets)
         self.auto_total_targets = sum(len(zc.AUTO_TARGETS[s]) for s in services)
         self.auto_best = None
         self._auto_full_pass = []
         self.auto_cancel = False
+        self._auto_completed = False
+        self._search_results = []
+        self._auto_token = self.runtime.request()
+        self._auto_services = list(services)
+        self._invalidate_health()
         self.auto_running = True
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -2582,11 +2839,11 @@ class ZapretApp(ctk.CTk):
         self.btn_apply_best.configure(state="disabled")
         self.btn_install_best.configure(state="disabled")
         self.btn_start.configure(state="disabled")
-        self.btn_stop.configure(state="disabled")
+        self.btn_stop.configure(state="normal")
         self.auto_bar.set(0)
         self.auto_fast = bool(self.fast_var.get())
-        threading.Thread(target=self._auto_worker, args=(list(self.presets), services),
-                         daemon=True).start()
+        self._auto_thread = threading.Thread(target=self._auto_worker, args=(list(self.presets), services), daemon=True)
+        self._auto_thread.start()
 
     def _on_fast_toggle(self):
         self.cfg["auto_fast"] = bool(self.fast_var.get())
@@ -2599,144 +2856,111 @@ class ZapretApp(ctk.CTk):
             self.log_msg("Авто-поиск: запрошена остановка…")
 
     def _auto_sleep(self, seconds):
-        end = time.time() + seconds
-        while time.time() < end:
-            if self.auto_cancel:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if self._search_cancelled():
                 return False
-            time.sleep(0.15)
-        return not self.auto_cancel
+            time.sleep(0.1)
+        return not self._search_cancelled()
+
+    def _search_cancelled(self):
+        return self.auto_cancel or self._closing or not self.runtime.valid(self._auto_token)
 
     def _auto_worker(self, presets, services):
+        token = self._auto_token
         mode = zc.get_game_mode()
-        svc_was_running = zc.service_running()
-        own_running = bool(self.proc and self.proc.poll() is None)
-        quick_hosts = [zc.AUTO_QUICK_HOST[s] for s in services]
-        full_targets = [(s, h) for s in services for h in zc.AUTO_TARGETS[s]]
+        original_args, original_name = self.active_args, self.active_preset_name
+        svc_was_running = False
+        own_running = False
+        interrupted = False
+        context = None
         counts = {s: len(zc.AUTO_TARGETS[s]) for s in services}
-        MAX_CAND = 6
-
+        targets = [(s, h) for s in services for h in zc.AUTO_TARGETS[s]]
         try:
-            if zc.winws_running() and not (own_running or svc_was_running):
-                self.log_msg("Авто-поиск отменён: найден winws.exe, запущенный другой программой.")
-                return
-            if svc_was_running:
-                self.log_msg("Останавливаю службу zapret на время поиска…")
-                # метка на случай, если приложение закроют посреди поиска:
-                # при следующем старте служба будет запущена обратно
-                self.cfg["svc_stopped_for_search"] = True
-                zc.update_config({"svc_stopped_for_search": self.cfg["svc_stopped_for_search"]})
-                zc.run_hidden(["net", "stop", zc.SERVICE_NAME])
-            if self.proc and self.proc.poll() is None:
-                self.log_msg("Текущий обход остановлен на время поиска.")
-            self._stop_local_winws(clear=False)
+            with self.runtime.transition(token):
+                svc_was_running = zc.service_running()
+                own_running = bool(self.proc and self.proc.poll() is None)
+                if zc.winws_running() and not (own_running or svc_was_running):
+                    raise RuntimeError("Найден winws.exe другой программы; поиск отменён.")
+                if svc_was_running:
+                    zc.update_config({"svc_stopped_for_search": True})
+                    self.cfg["svc_stopped_for_search"] = True
+                    zc.set_service_running(False)
+                interrupted = True
+                context = zc.recovery_context(presets, services)
+                self._stop_local_winws(clear=False)
+                trial_counts = {1: 0, 3: 0}
 
-            # умный порядок: последний рабочий -> пул -> похожие -> остальные
-            presets = zc.prioritize_presets(
-                presets, self.cfg.get("strategy"), self.cfg.get("recovery_pool"))
-            fast = getattr(self, "auto_fast", False)
-            EARLY_STOP = 3      # в быстром режиме хватит нескольких рабочих
-            self.log_msg("=== Авто-поиск (%s): %d пресетов, %d целей; первый: %s ==="
-                         % ("быстрый" if fast else "полный",
-                            len(presets), len(full_targets),
-                            presets[0]["name"] if presets else "—"))
-
-            # Фаза 1 — отсев (по приоритету)
-            self.post(lambda: self.auto_phase_lbl.configure(text="Фаза 1: отсев по приоритету"))
-            phase1 = []
-            full_found = 0
-            n = len(presets)
-            for idx, preset in enumerate(presets, 1):
-                if self.auto_cancel:
-                    break
-                name = preset["name"]
-                self.post(lambda i=idx, nn=n, nm=name:
-                          self._auto_prog(i / nn, f"Фаза 1 · {i}/{nn}: {nm}"))
-                args = zc.build_args_str(preset["args"], mode)
-                if not args:
-                    continue
-                trial = None
-                try:
-                    trial = zc.start_winws_silent(args)
-                    if not self._auto_sleep(zc.QUICK_WAIT):
-                        break
-                    if trial.poll() is not None:
-                        self.log_msg(f"[{name}] winws.exe завершился до проверки")
-                        continue
-                    res = zc.check_hosts(quick_hosts, zc.QUICK_TIMEOUT, attempts=1)
-                except Exception as e:
-                    self.log_msg(f"[{name}] запуск не удался: {e}")
-                    continue
-                finally:
-                    zc.stop_process(trial)
-                score = sum(1 for h in quick_hosts if res[h][0])
-                lats = [res[h][1] for h in quick_hosts if res[h][0] and res[h][1]]
-                avg = sum(lats) / len(lats) if lats else None
-                phase1.append((name, score, avg))
-                self.log_msg(f"  фаза 1 (быстрый отсев): {name} — {score}/{len(quick_hosts)}")
-                if score == len(quick_hosts):
-                    full_found += 1
-                    if fast and full_found >= EARLY_STOP:
-                        self.log_msg(f"  быстрый режим: найдено {full_found} рабочих — "
-                                     f"останавливаю отсев ({idx}/{n})")
-                        break
-
-            if self.auto_cancel:
-                candidates = []
-            else:
-                candidates = zc.select_candidates(phase1, len(quick_hosts), MAX_CAND)
-
-            # Фаза 2 — точная проверка
-            if candidates:
-                self.log_msg("--- Фаза 2 (точная проверка кандидатов) — "
-                             "именно эти цифры показаны в таблице ---")
-                self.post(lambda c=len(candidates):
-                          self.auto_phase_lbl.configure(text=f"Фаза 2: проверка {c} лучших"))
-                self.post(lambda: self.auto_bar.set(0))
-                for j, name in enumerate(candidates, 1):
-                    if self.auto_cancel:
-                        break
-                    preset = self.preset_by_name.get(name)
-                    if not preset:
-                        continue
-                    self.post(lambda jj=j, cc=len(candidates), nm=name:
-                              self._auto_prog(jj / cc, f"Фаза 2 · {jj}/{cc}: {nm}"))
-                    args = zc.build_args_str(preset["args"], mode)
-                    trial = None
+                def trial(preset, hosts, samples):
+                    self.runtime.check(token)
+                    if self._search_cancelled():
+                        raise Superseded("Поиск отменён")
+                    trial_counts[samples] += 1
+                    step = trial_counts[samples]
+                    progress = (0.3 * step / len(presets) if samples == 1
+                                else 0.3 + 0.7 * step / len(presets))
+                    label = "Быстрая проверка" if samples == 1 else "Повторная проверка"
+                    self.post(lambda f=progress, t=f"{label} {step}/{len(presets)} · {preset['name']}":
+                              self._auto_prog(f, t))
                     try:
-                        trial = zc.start_winws_silent(args)
-                        if not self._auto_sleep(zc.FULL_WAIT):
-                            break
-                        if trial.poll() is not None:
-                            self.log_msg(f"[{name}] winws.exe завершился до точной проверки")
-                            continue
-                        hosts = [h for _, h in full_targets]
-                        res = zc.check_hosts(hosts, zc.FULL_TIMEOUT, attempts=2)
-                    except Exception as e:
-                        self.log_msg(f"[{name}] точный запуск не удался: {e}")
-                        continue
+                        args = zc.build_args_str(preset["args"], mode)
+                        self.runtime.trial = zc.start_winws_silent(args)
+                        if not self._auto_sleep(zc.QUICK_WAIT if samples == 1 else zc.FULL_WAIT):
+                            raise Superseded("Поиск отменён")
+                        if self.runtime.trial.poll() is not None:
+                            raise RuntimeError("winws завершился до проверки")
+                        probes = zc.measure_hosts(hosts, zc.QUICK_TIMEOUT if samples == 1 else zc.FULL_TIMEOUT,
+                                                  samples, self._search_cancelled)
+                        if self.runtime.trial.poll() is not None:
+                            raise RuntimeError("winws завершился во время проверки")
+                        return probes
+                    except Superseded:
+                        raise
+                    except (OSError, RuntimeError) as exc:
+                        self.log_msg(f"[{preset['name']}] {exc}")
+                        from zapret_measurements import ProbeResult
+                        return {h: ProbeResult(samples, 0, None, str(exc), time.time()) for h in hosts}
                     finally:
-                        zc.stop_process(trial)
-                    per = {s: 0 for s in services}
-                    total, lat_sum, lat_n = 0, 0.0, 0
-                    for s, h in full_targets:
-                        ok, lat = res[h]
-                        if ok:
-                            per[s] += 1
-                            total += 1
-                            if lat:
-                                lat_sum += lat
-                                lat_n += 1
-                    avg = lat_sum / lat_n if lat_n else None
-                    self.post(lambda nm=name, p=dict(per), t=total, a=avg, cn=dict(counts):
-                              self._auto_add_row(nm, p, t, a, cn))
-            elif not self.auto_cancel:
-                self.log_msg("Рабочих пресетов на отсеве не найдено.")
+                        zc.stop_process(self.runtime.trial)
+                        self.runtime.trial = None
+
+                def publish(result):
+                    self._search_results.append(result)
+                    self.post(lambda r=result: self._auto_add_row(
+                        r.name, r.per_service, r.total, r.latency_ms, counts))
+                ordered = zc.prioritize_presets(presets, self.cfg.get("strategy"), self.cfg.get("recovery_pool"))
+                results = run_search(ordered, targets, [zc.AUTO_QUICK_HOST[s] for s in services],
+                                     trial, self._search_cancelled, self.auto_fast, publish)
+                if results is not None and not self._search_cancelled():
+                    final_context = zc.recovery_context(presets, services)
+                    if any(context.get(k) != final_context.get(k) for k in context if k != "checked_at"):
+                        raise RuntimeError("Условия проверки изменились. Повторите поиск.")
+                    self._auto_context = final_context
+                    self._search_results = results
+                    self._auto_completed = True
+        except Superseded:
+            self.auto_cancel = True
+        except Exception as exc:
+            self.auto_cancel = True
+            self.log_msg(f"[Авто-поиск] {exc}")
         finally:
-            if svc_was_running:
-                self.log_msg("Возвращаю службу zapret…")
-                zc.run_hidden(["net", "start", zc.SERVICE_NAME])
-                self.cfg.pop("svc_stopped_for_search", None)
-                zc.update_config({}, remove=("svc_stopped_for_search",))
+            try:
+                with self.runtime.lock:
+                    zc.stop_process(self.runtime.trial)
+                    self.runtime.trial = None
+                    if self.runtime.valid(token):
+                        if svc_was_running:
+                            zc.set_service_running(True)
+                            zc.update_config({}, remove=("svc_stopped_for_search",))
+                            self.cfg.pop("svc_stopped_for_search", None)
+                        elif interrupted and own_running and original_args:
+                            self._spawn_winws(original_args, original_name)
+            except Exception as exc:
+                self.auto_cancel = True
+                self._auto_completed = False
+                self.log_msg(f"[Восстановление после поиска] {exc}")
+            if not self._auto_completed:
+                self.auto_cancel = True
             self.post(self._auto_done)
 
     def _auto_prog(self, frac, text):
@@ -2748,28 +2972,56 @@ class ZapretApp(ctk.CTk):
         def cell(s):
             return f"{per.get(s, 0)}/{counts[s]}" if s in counts else "—"
 
-        ms = "—" if not avg_lat else str(round(avg_lat))
+        ms = "—" if avg_lat is None else str(round(avg_lat))
         total_str = f"{total}/{self.auto_total_targets}"
         tag = "good" if total == self.auto_total_targets else ("partial" if total > 0 else "bad")
-        self.tree.insert("", "end",
-                         values=(name, cell("discord"), cell("youtube"), cell("google"),
-                                 total_str, ms), tags=(tag,))
+        values = (name, cell("discord"), cell("youtube"), cell("google"), total_str, ms)
+        if self.tree.exists(name):
+            self.tree.item(name, values=values, tags=(tag,))
+        else:
+            self.tree.insert("", "end", iid=name, values=values, tags=(tag,))
         # дублируем в журнал точный результат фазы 2 — чтобы лог совпадал с
         # таблицей (раньше в лог попадал только быстрый отсев фазы 1, и цифры
         # выглядели противоречиво)
         self.log_msg(f"  фаза 2 (точно): {name} — {total_str}"
                      + (f" (~{ms} мс)" if avg_lat else ""))
-        if total > 0:
-            if zc.result_is_better((name, total, avg_lat), self.auto_best):
-                self.auto_best = (name, total, avg_lat)
-            if not self.auto_running:
-                self.btn_apply_best.configure(state="normal")
-                self.btn_install_best.configure(state="normal")
-        if total == self.auto_total_targets:   # полностью рабочая — в пул запаса
-            self._auto_full_pass.append((name, avg_lat if avg_lat else 1e9))
-
     def _auto_done(self):
         self.auto_running = False
+        if not self.runtime.valid(self._auto_token) or not self._auto_completed:
+            self.auto_cancel = True
+        if self._closing:
+            return
+        if not self.auto_cancel:
+            complete = sorted((r for r in self._search_results if r.total == self.auto_total_targets),
+                              key=lambda r: r.rank, reverse=True)
+            pool = [r.name for r in complete]
+            changes = {"recovery_pool": pool, "recovery_services": self._auto_services,
+                       "recovery_context": self._auto_context,
+                       **({"auto_recovery": True, "last_working_strategy": pool[0]} if pool else {})}
+            try:
+                zc.update_config(changes)
+            except Exception as exc:
+                self.log_msg(f"[Авто-поиск] Не удалось сохранить результаты: {exc}")
+                self.auto_cancel = True
+                self._auto_completed = False
+            else:
+                self.cfg.update(changes)
+                self._recovery_failed.clear()
+        if self.auto_cancel and getattr(self, "_previous_search", None) is not None:
+            self._search_results, self._auto_services, self.auto_total_targets = self._previous_search
+            self._ensure_page("auto")
+            for item in self.tree.get_children():
+                self.tree.delete(item)
+            counts = {s: len(zc.AUTO_TARGETS[s]) for s in self._auto_services}
+            for result in self._search_results:
+                self._auto_add_row(result.name, result.per_service, result.total, result.latency_ms, counts)
+        self._previous_search = None
+        results = sorted(self._search_results, key=lambda r: r.rank, reverse=True)
+        best = next((r for r in results if r.total > 0), None)
+        self.auto_best = (best.name, best.total, best.latency_ms) if best else None
+        self._auto_full_pass = [(r.name, r.latency_ms if r.latency_ms is not None else 1e9)
+                                for r in results if r.total == self.auto_total_targets]
+        self._ensure_page("auto")
         self.btn_apply_best.configure(state="normal" if self.auto_best else "disabled")
         self.btn_install_best.configure(state="normal" if self.auto_best else "disabled")
         if self.auto_cancel:
@@ -2795,16 +3047,6 @@ class ZapretApp(ctk.CTk):
                    text=(f"готово: {self.auto_best[0]}" if self.auto_best
                          else "рабочая стратегия не нашлась"))
         # пул запасных рабочих стратегий (для авто-восстановления), лучшие первыми
-        pool = [n for n, _ in sorted(self._auto_full_pass, key=lambda x: x[1])]
-        self.cfg["recovery_pool"] = pool
-        self._recovery_failed.clear()
-        if pool:
-            self.cfg["auto_recovery"] = True   # есть запас — включаем восстановление
-        changes = {"recovery_pool": pool, **({"auto_recovery": True} if pool else {})}
-        if pool:
-            self.cfg["last_working_strategy"] = pool[0]
-            changes["last_working_strategy"] = pool[0]
-        zc.update_config(changes)
         if pool:
             try:
                 self.recovery_switch.select()
@@ -2816,7 +3058,7 @@ class ZapretApp(ctk.CTk):
             name, total, avg = self.auto_best
             self.log_msg("=== Лучшая стратегия: %s (%d/%d, ~%s мс) ==="
                          % (name, total, self.auto_total_targets,
-                            round(avg) if avg else "?"))
+                            round(avg) if avg is not None else "?"))
             for item in self.tree.get_children():
                 if self.tree.item(item, "values")[0] == name:
                     self.tree.item(item, tags=("best",))
@@ -2830,8 +3072,8 @@ class ZapretApp(ctk.CTk):
             if self.auto_best:
                 name = self.auto_best[0]
                 self.log_msg(f"[watchdog] применяю найденную стратегию «{name}»")
-                self._notify("Обход восстановлен", f"Включена стратегия «{name}».")
-                self._bg(lambda n=name: self._switch_to(n))
+                token = self._auto_token
+                self._bg(lambda n=name: self._switch_to(n, token))
             else:
                 self._notify("Авто-поиск", "Рабочая стратегия не найдена.")
         self.refresh_status()
@@ -2845,9 +3087,10 @@ class ZapretApp(ctk.CTk):
         self._show_page("control")
         # реально применить: раньше кнопка только меняла выбор, и работающий
         # обход/служба оставались на старой стратегии (видно было по логам)
-        if zc.service_installed() or (self.proc and self.proc.poll() is None):
+        if self._managed_bypass_running():
+            token = self.runtime.request("service" if zc.service_running() else "manual")
             self.log_msg(f"Применяю «{name}» к работающему обходу…")
-            self._bg(lambda: self._switch_to(name))
+            self._bg(lambda: self._switch_to(name, token))
         else:
             self.on_start()
 
@@ -2859,8 +3102,9 @@ class ZapretApp(ctk.CTk):
         self.strategy_var.set(name)
         self._on_strategy_pick()
         self.log_msg(f"Возвращаю последнюю полностью проверенную стратегию: «{name}».")
-        if zc.service_installed() or (self.proc and self.proc.poll() is None):
-            self._bg(lambda: self._switch_to(name))
+        if self._managed_bypass_running():
+            token = self.runtime.request("service" if zc.service_running() else "manual")
+            self._bg(lambda: self._switch_to(name, token))
         else:
             self.on_start()
 
@@ -2873,31 +3117,90 @@ class ZapretApp(ctk.CTk):
 
     # -------------------------------------------------------------------- #
     def _real_quit(self):
-        if self.proc and self.proc.poll() is None:
-            if messagebox.askyesno("Выход", "Обход запущен. Остановить при выходе?"):
-                self._stop_local_winws()
+        if self._closing:
+            return
+        stop_manual = False
+        if (self.proc and self.proc.poll() is None) or (self.auto_running and self.runtime.desired == "manual"):
+            stop_manual = messagebox.askyesno("Выход", "Обход запущен. Остановить при выходе?")
+        self.auto_cancel = True
         self._closing = True
-        try:
-            zc.tg_proxy_stop()
-        except Exception:
-            pass
-        if self.tray is not None:
+        if stop_manual:
+            self.runtime.request("stopped")
+        if not self.auto_running:
+            self.runtime.close()
+        errors = []
+        # Waiting for processes and service transitions must not block Tk.
+        def cleanup():
+            thread = getattr(self, "_auto_thread", None)
+            if thread:
+                thread.join()
+            self.runtime.close()
             try:
-                self.tray.stop()
-            except Exception:
-                pass
-        if self._logf:
+                with self.runtime.lock:
+                    zc.stop_process(self.runtime.trial)
+                    self.runtime.trial = None
+                    if stop_manual:
+                        self._stop_local_winws()
+            except Exception as exc:
+                errors.append(str(exc))
             try:
-                self._logf.close()
-            except Exception:
+                zc.tg_proxy_stop()
+            except Exception as exc:
+                errors.append(str(exc))
+            if self.tray is not None:
+                try:
+                    self.tray.stop()
+                except Exception as exc:
+                    errors.append(str(exc))
+        shutdown = threading.Thread(target=cleanup, daemon=True)
+        shutdown.start()
+
+        def finish():
+            if shutdown.is_alive():
+                self.after(100, finish)
+                return
+            if errors:
+                messagebox.showwarning("Завершение работы", "Не всё удалось остановить:\n" + "\n".join(errors))
+            try:
+                if self._logf:
+                    self._logf.close()
+            except OSError:
                 pass
-        self.destroy()
+            self.destroy()
+        finish()
 
 
 _SINGLETON = None
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--smoke-test":
+        # Exercises the packaged GUI/crypto stack without starting bypass or changing settings.
+        import json
+        report = {"version": zc.APP_VERSION, "ok": False}
+        root = None
+        try:
+            import tgproxy.tg_ws_proxy
+            from tgproxy import __version__ as proxy_version
+            from zapret_measurements import ProbeResult
+            root = ctk.CTk()
+            root.withdraw()
+            root.update_idletasks()
+            zc._verify_tls_context()
+            bundled = os.path.join(zc._meipass(), "presets.json")
+            with open(bundled, encoding="utf-8") as source:
+                presets = zc.validate_presets(json.load(source))
+            report.update(ok=True, proxy_version=proxy_version, presets=len(presets),
+                          probe=ProbeResult(1, 1, 0, None, 0).reliable,
+                          proxy_entrypoint=callable(tgproxy.tg_ws_proxy._run))
+        except Exception as exc:
+            report["error"] = str(exc)
+        finally:
+            if root is not None:
+                root.destroy()
+            with open(sys.argv[2], "w", encoding="utf-8") as target:
+                json.dump(report, target)
+        raise SystemExit(0 if report["ok"] else 1)
     zc.install_crash_logging()   # необработанные исключения -> logs/crash.log
     if not zc.is_admin():
         zc.relaunch_as_admin()

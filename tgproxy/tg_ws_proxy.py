@@ -18,9 +18,11 @@ if __name__ == '__main__' and (__package__ is None or __package__ == ''):
     _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if _repo_root not in sys.path:
         sys.path.insert(0, _repo_root)
-    __package__ = 'proxy'
+    __package__ = 'tgproxy'
 
-from .utils import *
+from .utils import (
+    DC_IDX_POS, Dict, DomainCensorFilter, HANDSHAKE_LEN, IV_LEN, KEY_LEN, Optional, PREKEY_LEN, PROTO_ABRIDGED_INT, PROTO_INTERMEDIATE_INT, PROTO_PADDED_INTERMEDIATE_INT, PROTO_TAG_ABRIDGED, PROTO_TAG_INTERMEDIATE, PROTO_TAG_POS, PROTO_TAG_SECURE, RESERVED_CONTINUE, RESERVED_FIRST_BYTES, RESERVED_STARTS, SKIP_LEN, WS_PATH, WS_PATH_TEST, ZERO_64, get_link_host, logging, ws_domains
+)
 from .stats import stats
 from .config import proxy_config, parse_dc_ip_list, start_cfproxy_domain_refresh, coerce_domain_list
 from .bridge import MsgSplitter, CryptoCtx, do_fallback, bridge_ws_reencrypt
@@ -731,6 +733,7 @@ def main():
 
     console = logging.StreamHandler()
     console.setFormatter(log_fmt)
+    console.addFilter(DomainCensorFilter())
     root.addHandler(console)
 
     if args.log_file:
@@ -741,6 +744,7 @@ def main():
             backups=args.log_backups,
         )
         fh.setFormatter(log_fmt)
+        fh.addFilter(DomainCensorFilter())
         root.addHandler(fh)
 
     logging.getLogger('asyncio').setLevel(logging.WARNING)

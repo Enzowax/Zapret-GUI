@@ -101,7 +101,7 @@ TELEGRAM_IP_RANGES = [
 ]
 
 # --- версия приложения и источник обновлений (GitHub) ---
-APP_VERSION = "2.43.0"
+APP_VERSION = "2.44.0"
 GITHUB_OWNER = "Enzowax"
 GITHUB_REPO = "Zapret-GUI"
 GITHUB_API_LATEST = (f"https://api.github.com/repos/{GITHUB_OWNER}/"
@@ -420,7 +420,19 @@ def build_args_str(argstr, mode):
     if not argstr:
         return None
     gf_tcp, gf_udp = game_filter_values(mode)
-    return tokenize(substitute(argstr, gf_tcp, gf_udp))
+    args = tokenize(substitute(argstr, gf_tcp, gf_udp))
+    blocks = [[]]
+    for arg in args:
+        if arg == "--new":
+            blocks.append([])
+        else:
+            blocks[-1].append(arg)
+    exclude = "--hostlist-exclude=" + os.path.join(LISTS, "list-exclude-user.txt")
+    for block in blocks:
+        if any(x.startswith(("--hostlist=", "--hostlist-auto=")) for x in block):
+            if exclude not in block:
+                block.append(exclude)
+    return [arg for i, block in enumerate(blocks) for arg in ((["--new"] if i else []) + block)]
 
 
 def build_args(bat_path, mode):
@@ -501,11 +513,7 @@ def select_candidates(phase1, full_score, max_cand=6):
         # Прежний `x[2] or 9e9` ошибочно считал 0.0 за «нет данных».
         return 9e9 if x[2] is None else x[2]
 
-    full = [p for p in phase1 if p[1] == full_score]
-    if full:
-        full.sort(key=lat)
-        return [p[0] for p in full[:max_cand]]
-    scored = [p for p in phase1 if p[1] > 0]
+    scored = list(phase1)
     scored.sort(key=lambda x: (-x[1], lat(x)))
     return [p[0] for p in scored[:max_cand]]
 
@@ -563,7 +571,7 @@ def load_presets():
     """Список пресетов: из presets.json, иначе — построить из .bat в памяти."""
     try:
         with open(PRESETS_JSON, encoding="utf-8") as f:
-            presets = json.load(f).get("presets", [])
+            presets = validate_presets(json.load(f))
         if presets:
             return presets
     except Exception:
@@ -631,8 +639,15 @@ def load_config():
     try:
         with open(CONFIG_FILE, encoding="utf-8") as f:
             data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except Exception:
+            if not isinstance(data, dict):
+                raise ValueError("Настройки должны быть объектом")
+            return data
+    except FileNotFoundError:
+        return {}
+    except (ValueError, UnicodeError):
+        # Preserve evidence before allowing defaults to replace damaged settings.
+        backup = CONFIG_FILE + f".{time.time_ns()}.broken"
+        shutil.copy2(CONFIG_FILE, backup)
         return {}
 
 
@@ -647,6 +662,8 @@ def _atomic_write(path, data):
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
@@ -684,26 +701,113 @@ def export_settings(path):
     return True
 
 
+def validate_presets(data):
+    if not isinstance(data, dict) or data.get("version", 1) != 1:
+        raise ValueError("Неподдерживаемый формат пресетов")
+    presets = data.get("presets")
+    if not isinstance(presets, list) or not presets:
+        raise ValueError("Пустой или неверный список пресетов")
+    names, ids = set(), set()
+    for p in presets:
+        if not isinstance(p, dict) or any(not isinstance(p.get(k), str) or not p[k].strip()
+                                         for k in ("name", "args")):
+            raise ValueError("Пресету необходимы имя и строка аргументов")
+        if p["name"] in names:
+            raise ValueError("Повторяющееся имя пресета")
+        names.add(p["name"])
+        if "id" in p:
+            if not isinstance(p["id"], str) or not p["id"] or p["id"] in ids:
+                raise ValueError("Неверный или повторяющийся id пресета")
+            ids.add(p["id"])
+    return presets
+
+
+def _write_transaction(files):
+    """Rollback a failed multi-file replacement; retain backups if rollback fails."""
+    previous = {}
+    for path in files:
+        try:
+            with open(path, "rb") as f:
+                previous[path] = f.read()
+        except FileNotFoundError:
+            previous[path] = None
+    for path, data in previous.items():
+        if data is not None:
+            _atomic_write(path + ".backup", data)
+    changed = []
+    try:
+        for path, data in files.items():
+            _atomic_write(path, data)
+            changed.append(path)
+    except Exception as error:
+        failures = []
+        for path in reversed(changed):
+            try:
+                if previous[path] is None:
+                    os.remove(path)
+                else:
+                    _atomic_write(path, previous[path])
+            except OSError as exc:
+                failures.append(str(exc))
+        if failures:
+            raise RuntimeError("Неполный откат; сохранены .backup: " + "; ".join(failures)) from error
+        raise
+
+
+def _validate_config(cfg):
+    if not isinstance(cfg, dict):
+        raise ValueError("Настройки должны быть объектом")
+    current = load_config()
+    for key, value in cfg.items():
+        expected = current.get(key)
+        if expected is not None and type(value) is not type(expected):
+            raise ValueError(f"Неверный тип настройки: {key}")
+    for key in ("strategy", "appearance", "ui_mode", "tg_secret", "doh_provider"):
+        if key in cfg and not isinstance(cfg[key], str):
+            raise ValueError(f"Неверный тип настройки: {key}")
+    for key in ("auto_fast", "auto_recovery", "auto_research_on_fail", "autostart_bypass",
+                "first_run_done", "minimize_to_tray", "notifications", "svc_stopped_for_search",
+                "doh_enabled", "doh_pending", "lists_auto_update", "tg_cfproxy", "autostart_proxy"):
+        if key in cfg and type(cfg[key]) is not bool:
+            raise ValueError(f"Настройка {key} должна быть логической")
+    for key in ("accent_name", "last_working_strategy", "defaults_version"):
+        if key in cfg and not isinstance(cfg[key], str):
+            raise ValueError(f"Неверный тип настройки: {key}")
+    for key, choices in (("appearance", ("light", "dark", "system")),
+                         ("ui_mode", ("simple", "advanced"))):
+        if key in cfg and cfg[key] not in choices:
+            raise ValueError(f"Неизвестное значение настройки: {key}")
+    if "tg_port" in cfg and (type(cfg["tg_port"]) is not int or not 1 <= cfg["tg_port"] <= 65535):
+        raise ValueError("Недопустимый порт Telegram")
+    if "recovery_services" in cfg and (not isinstance(cfg["recovery_services"], list)
+            or not cfg["recovery_services"] or any(s not in AUTO_TARGETS for s in cfg["recovery_services"])):
+        raise ValueError("Неверные сервисы восстановления")
+    if "recovery_pool" in cfg and (not isinstance(cfg["recovery_pool"], list)
+                                   or not all(isinstance(x, str) for x in cfg["recovery_pool"])):
+        raise ValueError("Неверный пул восстановления")
+
+
 def import_settings(path):
     """Восстановить конфиг и пресеты из файла. Возвращает (ok, сообщение)."""
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     if not isinstance(data, dict):
         return False, "неверный формат файла"
-    n = 0
-    if isinstance(data.get("config"), dict):
-        save_config(data["config"])
-        n += 1
-    if isinstance(data.get("presets"), dict) and data["presets"].get("presets"):
-        try:
-            with open(PRESETS_JSON, "w", encoding="utf-8") as f:
-                json.dump(data["presets"], f, ensure_ascii=False, indent=2)
-            n += 1
-        except Exception:
-            pass
-    if not n:
-        return False, "в файле нет настроек/пресетов"
-    return True, "настройки импортированы"
+    try:
+        with _cfg_write_lock:
+            files = {}
+            if "config" in data:
+                _validate_config(data["config"])
+                files[CONFIG_FILE] = json.dumps(data["config"], ensure_ascii=False, indent=2).encode("utf-8")
+            if "presets" in data:
+                validate_presets(data["presets"])
+                files[PRESETS_JSON] = json.dumps(data["presets"], ensure_ascii=False, indent=2).encode("utf-8")
+            if not files:
+                return False, "в файле нет настроек/пресетов"
+            _write_transaction(files)
+        return True, "настройки импортированы"
+    except (ValueError, OSError, RuntimeError) as exc:
+        return False, str(exc)
 
 
 # --------------------------------------------------------------------------- #
@@ -729,6 +833,35 @@ def service_running():
         return "RUNNING" in run_hidden(["sc", "query", SERVICE_NAME]).stdout.upper()
     except Exception:
         return False
+
+
+def set_service_running(running):
+    if service_running() == running:
+        return
+    result = run_hidden(["net", "start" if running else "stop", SERVICE_NAME])
+    for _ in range(20):
+        if service_running() == running:
+            return
+        time.sleep(0.25)
+    raise RuntimeError((result.stderr or result.stdout or "Состояние службы не изменилось").strip())
+
+
+def network_identity():
+    result = _ps("Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop | "
+                 "Sort-Object InterfaceIndex,NextHop | Select-Object InterfaceIndex,NextHop | ConvertTo-Json -Compress", timeout=10)
+    if result.returncode:
+        return None
+    return hashlib.sha256(result.stdout.strip().encode("utf-8")).hexdigest()
+
+
+def recovery_context(presets, services):
+    mode = get_game_mode()
+    files = {name: _sha256(os.path.join(LISTS, name)) for name in sorted(os.listdir(LISTS))
+             if name.endswith(".txt")}
+    return {"version": 1, "services": sorted(services), "mode": mode,
+            "arguments": {p["name"]: hashlib.sha256(json.dumps(build_args_str(p["args"], mode)).encode()).hexdigest()
+                          for p in presets}, "lists": files, "engine": _sha256(WINWS),
+            "network": network_identity(), "checked_at": int(time.time())}
 
 
 def tcp_timestamps_enabled():
@@ -767,12 +900,26 @@ def remove_windivert():
     run_hidden(["sc", "delete", "WinDivert14"])
 
 
-def kill_winws_only():
-    """Аварийная совместимость для ручного сброса старых запусков.
+def stop_all_winws():
+    """Принудительно остановить все процессы winws.exe на компьютере.
 
-    Основной GUI останавливает только сохранённый Popen через stop_process().
+    Это аварийная операция для диагностики: в отличие от ``stop_process`` она
+    не ограничивается дочерним процессом текущего GUI. После taskkill ожидаем
+    исчезновения процесса из списка, чтобы не сообщать об успехе раньше времени.
     """
-    run_hidden(["taskkill", "/IM", "winws.exe", "/F"])
+    result = run_hidden(["taskkill", "/IM", "winws.exe", "/F"])
+    for _ in range(20):
+        if not winws_running():
+            return ("Все процессы winws.exe принудительно остановлены."
+                    if result.returncode == 0 else "Процессы winws.exe не найдены.")
+        time.sleep(0.25)
+    detail = (result.stderr or result.stdout or "Процессы winws.exe продолжают работать.").strip()
+    raise RuntimeError(detail)
+
+
+def kill_winws_only():
+    """Совместимое имя аварийной остановки всех процессов winws.exe."""
+    return stop_all_winws()
 
 
 def start_winws_silent(args):
@@ -803,28 +950,39 @@ def stop_process(proc, timeout=5):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=timeout)
-    except OSError:
-        return False
+    except OSError as exc:
+        if proc.poll() is not None:
+            return False
+        raise RuntimeError(f"Не удалось остановить процесс: {exc}") from exc
     return True
 
 
-def install_service(display_name, argstr, mode):
+def install_service(display_name, argstr, mode, cancelled=lambda: False):
     """Создать службу автозапуска из строки аргументов. -> (ok, log)."""
     args = build_args_str(argstr, mode)
     if not args:
         return False, "Не удалось разобрать аргументы пресета."
     logs = []
-    run_hidden(["net", "stop", SERVICE_NAME])
-    run_hidden(["sc", "delete", SERVICE_NAME])
+    if cancelled():
+        return False, "Установка отменена"
+    if service_installed():
+        try:
+            set_service_running(False)
+        except RuntimeError as exc:
+            return False, str(exc)
     enable_tcp_timestamps()
 
     binpath = subprocess.list2cmdline([WINWS] + args)
-    res = run_hidden(["sc", "create", SERVICE_NAME, "binPath=", binpath,
+    if cancelled():
+        return False, "Установка отменена"
+    res = run_hidden(["sc", "config" if service_installed() else "create", SERVICE_NAME, "binPath=", binpath,
                       "DisplayName=", "zapret", "start=", "auto"])
     logs.append((res.stdout or res.stderr).strip())
     if res.returncode:
         return False, "\n".join(logs)
     run_hidden(["sc", "description", SERVICE_NAME, "Zapret DPI bypass software"])
+    if cancelled():
+        return False, "Установка отменена"
     sres = run_hidden(["sc", "start", SERVICE_NAME])
     logs.append((sres.stdout or sres.stderr).strip())
 
@@ -834,8 +992,10 @@ def install_service(display_name, argstr, mode):
 
 
 def remove_service():
-    run_hidden(["net", "stop", SERVICE_NAME])
-    run_hidden(["sc", "delete", SERVICE_NAME])
+    set_service_running(False)
+    result = run_hidden(["sc", "delete", SERVICE_NAME])
+    if result.returncode:
+        raise RuntimeError(result.stderr or result.stdout or "Не удалось удалить службу")
 
 
 def update_ipset():
@@ -913,37 +1073,52 @@ def write_user_domains(domains):
             clean.append(nd)
     clean.sort()
     os.makedirs(LISTS, exist_ok=True)
-    with open(USER_LIST_FILE, "w", encoding="utf-8") as f:
-        if clean:
-            f.write("\n".join(clean) + "\n")
+    _atomic_write(USER_LIST_FILE, (("\n".join(clean) + "\n") if clean else "").encode("utf-8"))
     return clean
 
 
 def update_lists():
     """Скачать свежие дефолтные списки доменов из upstream (Flowseal).
     Пользовательские *-user.txt и ipset не трогаются. -> (ok_any, сообщение)."""
-    parts, ok_any = [], False
+    parts, files = [], {}
     for name in LIST_UPDATE_FILES:
         try:
             req = urllib.request.Request(
                 LIST_RAW_BASE + name,
                 headers={"Cache-Control": "no-cache", "User-Agent": "ZapretGUI"})
             with urllib.request.urlopen(req, timeout=20) as r:
-                data = r.read()
-            if not data.strip():
-                parts.append(f"{name}: пусто")
-                continue
-            _atomic_write(os.path.join(LISTS, name), data)
-            n = len([x for x in data.decode("utf-8", "replace").splitlines()
-                     if x.strip() and not x.strip().startswith("#")])
+                data = r.read(8 * 1024 * 1024 + 1)
+            n = validate_hostlist(data)
+            files[os.path.join(LISTS, name)] = data
             parts.append(f"{name.replace('list-', '').replace('.txt', '')}: {n}")
-            ok_any = True
         except Exception as e:
-            parts.append(f"{name}: ошибка ({e})")
-    if ok_any and len(parts) == len(LIST_UPDATE_FILES) and not any(
-            "ошибка" in part or "пусто" in part for part in parts):
-        update_config({"lists_last_update": int(time.time())})
-    return ok_any, ("Списки обновлены — " if ok_any else "Не удалось обновить — ") + "; ".join(parts)
+            return False, f"Списки сохранены: {name}: {e}"
+    try:
+        with _cfg_write_lock:
+            cfg = load_config()
+            cfg["lists_last_update"] = int(time.time())
+            files[CONFIG_FILE] = json.dumps(cfg, ensure_ascii=False, indent=2).encode("utf-8")
+            _write_transaction(files)
+        return True, "Списки обновлены — " + "; ".join(parts)
+    except Exception as exc:
+        return False, f"Ошибка обновления списков: {exc}"
+
+
+def validate_hostlist(data):
+    if len(data) > 8 * 1024 * 1024:
+        raise ValueError("Слишком большой список")
+    lines = [line.strip() for line in data.decode("utf-8-sig").splitlines()
+             if line.strip() and not line.lstrip().startswith("#")]
+    if not lines:
+        raise ValueError("Пустой список")
+    for line in lines:
+        domain = line.removeprefix("^")
+        labels = domain.rstrip(".").split(".")
+        if len(labels) < 2 or len(domain) > 253 or any(
+                not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?", x)
+                for x in labels):
+            raise ValueError(f"Недопустимая строка списка: {line[:80]}")
+    return len(lines)
 
 
 def lists_last_update_ts():
@@ -976,8 +1151,7 @@ def ensure_telegram_bypass_exclude():
         if not added:
             return False
         os.makedirs(LISTS, exist_ok=True)
-        with open(IPSET_EXCLUDE_USER_FILE, "w", encoding="utf-8") as f:
-            f.write("\n".join(existing + added) + "\n")
+        _atomic_write(IPSET_EXCLUDE_USER_FILE, ("\n".join(existing + added) + "\n").encode("utf-8"))
         return True
     except Exception:
         return False
@@ -1130,6 +1304,8 @@ def apply_fix(key):
 
     if key == "stop_conflicts":
         return stop_conflicts()
+    if key == "stop_all_winws":
+        return stop_all_winws()
     return ""
 
 
@@ -1163,6 +1339,23 @@ def check_update(timeout=10):
                 size = int(a.get("size") or 0)
                 digest = a.get("digest") or ""
                 break
+        if not re.fullmatch(r"sha256:[a-fA-F0-9]{64}", digest):
+            digest = ""
+            asset = next((a for a in data.get("assets", [])
+                          if a.get("name", "").lower() in ("zapretcontrol.zip.sha256", "sha256sums.txt")), None)
+            if asset:
+                checksum_url = asset.get("browser_download_url", "")
+                if checksum_url.startswith(f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/download/"):
+                    try:
+                        with urllib.request.urlopen(checksum_url, timeout=timeout) as response:
+                            text = response.read(65536).decode("utf-8-sig")
+                        for line in text.splitlines():
+                            match = re.fullmatch(r"([a-fA-F0-9]{64})(?:\s+\*?ZapretControl\.zip)?", line.strip())
+                            if match:
+                                digest = "sha256:" + match[1].lower()
+                                break
+                    except (OSError, UnicodeError):
+                        pass
         available = bool(latest) and _version_tuple(latest) > _version_tuple(APP_VERSION)
         return {"available": available, "current": APP_VERSION,
                 "latest": latest or "?", "url": url, "size": size,
@@ -1174,6 +1367,8 @@ def check_update(timeout=10):
 def download_update(url, dest, progress_cb=None, timeout=180, expected_size=0,
                     expected_digest=""):
     """Скачать архив обновления с проверкой целостности по размеру."""
+    if not re.fullmatch(r"sha256:[a-fA-F0-9]{64}", expected_digest or ""):
+        raise RuntimeError("Нет проверенной SHA-256; скачайте обновление вручную")
     req = urllib.request.Request(url, headers={"User-Agent": "ZapretGUI"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         total = int(r.headers.get("Content-Length") or expected_size or 0)
@@ -1196,22 +1391,31 @@ def download_update(url, dest, progress_cb=None, timeout=180, expected_size=0,
     return dest
 
 
-def apply_update(zip_path):
+def apply_update(zip_path, expected_digest=""):
     """Подготовить onedir-обновление; отдельный PowerShell ждёт выхода GUI."""
     if not getattr(sys, "frozen", False):
         raise RuntimeError("Самообновление доступно только в собранном приложении")
+    if not re.fullmatch(r"sha256:[a-fA-F0-9]{64}", expected_digest or ""):
+        raise RuntimeError("Нет проверенной SHA-256 архива обновления")
     install_dir = os.path.dirname(os.path.abspath(sys.executable))
-    stage = tempfile.mkdtemp(prefix="zapret_upd_")
-    with zipfile.ZipFile(zip_path) as archive:
-        for info in archive.infolist():
-            parts = info.filename.replace("\\", "/").split("/")
-            if (parts[0] != "ZapretControl" or ".." in parts
-                    or any(":" in part for part in parts)
-                    or (info.external_attr >> 16) & 0o170000 == 0o120000):
-                raise RuntimeError("Недопустимый путь в архиве обновления")
-            if len(parts) > 1 and parts[1] not in ("", "ZapretControl.exe", "_internal"):
-                raise RuntimeError("Неожиданная структура архива обновления")
-        archive.extractall(stage)
+    with open(zip_path, "rb") as source:
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: source.read(65536), b""):
+            digest.update(chunk)
+        if digest.hexdigest() != expected_digest.partition(":")[2].lower():
+            raise RuntimeError("SHA-256 архива изменилась перед установкой")
+        source.seek(0)
+        with zipfile.ZipFile(source) as archive:
+            for info in archive.infolist():
+                parts = info.filename.replace("\\", "/").split("/")
+                if (parts[0] != "ZapretControl" or ".." in parts
+                        or any(":" in part for part in parts)
+                        or (info.external_attr >> 16) & 0o170000 == 0o120000):
+                    raise RuntimeError("Недопустимый путь в архиве обновления")
+                if len(parts) > 1 and parts[1] not in ("", "ZapretControl.exe", "_internal"):
+                    raise RuntimeError("Неожиданная структура архива обновления")
+            stage = tempfile.mkdtemp(prefix="zapret_upd_")
+            archive.extractall(stage)
     src = os.path.join(stage, "ZapretControl")
     if not os.path.isfile(os.path.join(src, "ZapretControl.exe")) or not os.path.isdir(
             os.path.join(src, "_internal")):
@@ -1251,47 +1455,30 @@ def _verify_tls_context():
     рабочей. Хуже того, заглушка отвечает с минимальной задержкой, поэтому
     такая «стратегия» ещё и занимает первое место как «лучшая» (наблюдалось
     на general (ALT)). С проверкой сертификата заглушка не пройдёт: валидный
-    сертификат для discord.com есть только у настоящего сервера Telegram."""
+    сертификат для discord.com должен пройти проверку доверия и имени хоста."""
     return ssl.create_default_context()
 
 
-async def _check_host(host, timeout, attempts):
-    ctx = _verify_tls_context()
-    for _ in range(attempts):
-        t0 = time.perf_counter()
-        writer = None
-        try:
-            fut = asyncio.open_connection(host, 443, ssl=ctx, server_hostname=host)
-            reader, writer = await asyncio.wait_for(fut, timeout=timeout)
-            return True, (time.perf_counter() - t0) * 1000.0
-        except Exception:
-            continue
-        finally:
-            if writer is not None:
-                try:
-                    writer.close()
-                except Exception:
-                    pass
-    return False, None
+async def _check_host(host, timeout, attempts, context=None):
+    from zapret_measurements import probe
+    result = await probe(host, timeout, attempts, context or _verify_tls_context())
+    return result.reliable, result.latency_ms
 
 
 async def _check_many(hosts, timeout, attempts):
-    return await asyncio.gather(*[_check_host(h, timeout, attempts) for h in hosts])
+    context = _verify_tls_context()
+    return await asyncio.gather(*[_check_host(h, timeout, attempts, context) for h in hosts])
+
+
+def measure_hosts(hosts, timeout=3, samples=1, cancelled=lambda: False):
+    from zapret_measurements import measure_hosts as measure
+    return measure(hosts, timeout, samples, cancelled, _verify_tls_context)
 
 
 def check_hosts(hosts, timeout, attempts=1):
-    if not hosts:
-        return {}
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        results = loop.run_until_complete(_check_many(hosts, timeout, attempts))
-    finally:
-        try:
-            loop.close()
-        except Exception:
-            pass
-    return dict(zip(hosts, results))
+    return {host: (result.reliable, result.latency_ms)
+            for host, result in measure_hosts(hosts, timeout, attempts).items()}
+
 
 
 # --------------------------------------------------------------------------- #
@@ -1427,6 +1614,8 @@ def _setup_proxy_logging():
         h = logging.handlers.RotatingFileHandler(
             TG_PROXY_LOG, maxBytes=512 * 1024, backupCount=2, encoding="utf-8")
         h.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-5s  %(message)s"))
+        from tgproxy.utils import DomainCensorFilter
+        h.addFilter(DomainCensorFilter())
         h._zapret = True
         lg.addHandler(h)
         lg.propagate = False
@@ -1547,6 +1736,7 @@ def make_support_bundle():
             cfg = load_config()
             cfg.pop("tg_secret", None)
             cfg.pop("doh_prev", None)
+            cfg.pop("doh_snapshot", None)
             z.writestr("app_config.json", json.dumps(cfg, ensure_ascii=False, indent=2))
         except Exception:
             pass
@@ -1625,81 +1815,141 @@ def _doh_register_script(ips, tmpl):
     )
 
 
-def doh_enable(provider="cloudflare"):
-    """Включить DoH на активных адаптерах и проверить, что DNS реально применён.
+_doh_lock = threading.Lock()
 
-    При любой ошибке PowerShell возвращает прежние адреса на уже изменённых
-    адаптерах. Настройки приложения меняются только после успешной проверки.
-    """
+
+def _dns_snapshot():
+    script = r"""
+$ErrorActionPreference='Stop'
+$result=@{}
+foreach($a in @(Get-NetAdapter | Where-Object {$_.Status -eq 'Up'})){
+    # Some Windows builds format InterfaceGuid with braces. Normalize before
+    # adding the registry key's required single pair of braces.
+    $guid=$a.InterfaceGuid.ToString().Trim('{}')
+    $key='HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{'+$guid+'}'
+    $reg=Get-ItemProperty -LiteralPath $key -ErrorAction Stop
+    $result[[string]$a.ifIndex]=@{
+        guid=$guid
+        automatic=[string]::IsNullOrWhiteSpace([string]$reg.NameServer)
+        servers=@((Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction Stop).ServerAddresses)
+    }
+}
+$result | ConvertTo-Json -Depth 5 -Compress
+"""
+    result = _ps_checked(script, "Не удалось сохранить исходный DNS")
+    try:
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        return _validate_dns_snapshot(data)
+    except (ValueError, IndexError, TypeError) as exc:
+        raise RuntimeError("Неверный снимок DNS; настройки не изменены") from exc
+
+
+def _validate_dns_snapshot(data):
+    import uuid
+    if not isinstance(data, dict) or not data:
+        raise ValueError("Нет адаптеров в снимке DNS")
+    for index, entry in data.items():
+        if not str(index).isdigit() or int(index) < 1 or not isinstance(entry, dict):
+            raise ValueError("Неверный адаптер DNS")
+        if not isinstance(entry.get("guid"), str):
+            raise ValueError("Нет идентификатора адаптера")
+        uuid.UUID(entry["guid"])
+        if type(entry.get("automatic")) is not bool or not isinstance(entry.get("servers"), list):
+            raise ValueError("Неверный режим DNS")
+        for ip in entry["servers"]:
+            if ipaddress.ip_address(ip).version != 4:
+                raise ValueError("Ожидался IPv4 DNS")
+        if not entry["automatic"] and not entry["servers"]:
+            raise ValueError("Пустой статический DNS")
+    return data
+
+
+def _dns_apply(snapshot, ips=None):
+    # Restrict changes to IPv4 and resolve adapters by GUID (indices can be reused).
+    _validate_dns_snapshot(snapshot)
+    commands = ["$ErrorActionPreference='Stop'", "$errors=@()"]
+    for entry in snapshot.values():
+        import uuid
+        guid = str(uuid.UUID(entry["guid"]))
+        servers = ips if ips is not None else entry["servers"]
+        automatic = ips is None and entry["automatic"]
+        commands += [
+            "try {",
+            f"$a=Get-NetAdapter -IncludeHidden | Where-Object {{$_.InterfaceGuid.ToString().Trim('{{}}') -eq '{guid}'}}",
+            "if(-not $a){ throw 'Адаптер отсутствует' }",
+            "$dns=Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction Stop",
+        ]
+        if automatic:
+            commands.append("$dns | Set-DnsClientServerAddress -ResetServerAddresses -ErrorAction Stop")
+            commands.append(f"$reg=Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\{{{guid}}}'")
+            commands.append("if(-not [string]::IsNullOrWhiteSpace([string]$reg.NameServer)){throw 'Автоматический DNS не восстановлен'}")
+        else:
+            values = ",".join(repr(str(ipaddress.ip_address(ip))) for ip in servers)
+            commands.append(f"$expected=@({values})")
+            commands.append("$dns | Set-DnsClientServerAddress -ServerAddresses $expected -ErrorAction Stop")
+            commands.append("$actual=@((Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4).ServerAddresses)")
+            commands.append("if($actual.Count -ne $expected.Count -or (Compare-Object $actual $expected)){throw 'DNS не применён'}")
+        commands.append("} catch { $errors += $_.Exception.Message }")
+    commands += ["if($errors.Count){throw ($errors -join '; ')}", "Clear-DnsClientCache -ErrorAction Stop"]
+    _ps_checked("\n".join(commands), "Не удалось применить DNS")
+
+
+def doh_enable(provider="cloudflare"):
     if provider not in DOH_PROVIDERS:
         raise ValueError("Неизвестный DoH-провайдер")
-    ips, tmpl = DOH_PROVIDERS[provider]
-    cfg = load_config()
-    script = _doh_register_script(ips, tmpl) + (
-        "$prev=@{}; $changed=@()\n"
-        "try {\n"
-        "  $adapters=@(Get-NetAdapter | Where-Object {$_.Status -eq 'Up'})\n"
-        "  if($adapters.Count -eq 0){ throw 'Нет активных сетевых адаптеров' }\n"
-        "  foreach($a in $adapters){\n"
-        "    $id=[string]$a.ifIndex\n"
-        "    $prev[$id]=@((Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4).ServerAddresses)\n"
-        "    $changed += $id\n"
-        "    Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses $ips -ErrorAction Stop\n"
-        "    $actual=@((Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4).ServerAddresses)\n"
-        "    if($actual.Count -ne $ips.Count -or (Compare-Object $actual $ips)){ throw ('DNS не применён для адаптера '+$a.Name) }\n"
-        "  }\n"
-        "  Clear-DnsClientCache -ErrorAction Stop\n"
-        "  $prev | ConvertTo-Json -Compress -Depth 3\n"
-        "} catch {\n"
-        "  foreach($id in $changed){ $old=@($prev[$id]); if($old.Count){ Set-DnsClientServerAddress -InterfaceIndex $id -ServerAddresses $old -ErrorAction SilentlyContinue }else{ Set-DnsClientServerAddress -InterfaceIndex $id -ResetServerAddresses -ErrorAction SilentlyContinue } }\n"
-        "  throw\n"
-        "}\n"
-    )
-    res = _ps_checked(script, "Не удалось включить DoH")
-    previous = {}
-    try:
-        line = (res.stdout or "").strip().splitlines()
-        if line:
-            data = json.loads(line[-1])
-            if isinstance(data, dict):
-                previous = _doh_previous(data)
-    except Exception:
-        previous = {}
-    # При смене провайдера не затираем DNS, сохранённый до первого включения.
-    if not cfg.get("doh_enabled"):
-        update_config({"doh_enabled": True, "doh_provider": provider, "doh_prev": previous})
-    else:
-        update_config({"doh_enabled": True, "doh_provider": provider})
-    return True
+    with _doh_lock:
+        cfg = load_config()
+        if cfg.get("doh_pending"):
+            raise RuntimeError("Сначала восстановите DNS после незавершённой операции")
+        current = _dns_snapshot()
+        saved = dict(cfg.get("doh_snapshot") or {})
+        if cfg.get("doh_enabled") and not saved:
+            raise RuntimeError("Сначала отключите прежний DoH: отсутствует снимок режима DNS")
+        known_guids = {entry["guid"].lower() for entry in saved.values()}
+        for index, entry in current.items():
+            if entry["guid"].lower() not in known_guids:
+                if index in saved:
+                    raise RuntimeError("Индекс адаптера изменился; сначала восстановите DNS")
+                saved[index] = entry
+        _validate_dns_snapshot(saved)
+        # A durable snapshot precedes every system mutation.
+        update_config({"doh_snapshot": saved, "doh_pending": True})
+        ips, template = DOH_PROVIDERS[provider]
+        try:
+            _ps_checked(_doh_register_script(ips, template), "Не удалось зарегистрировать DoH")
+            _dns_apply(current, ips)
+            update_config({"doh_enabled": True, "doh_provider": provider, "doh_pending": False})
+        except Exception as exc:
+            try:
+                _dns_apply(current)
+                update_config({"doh_pending": False}, remove=(() if cfg.get("doh_enabled") else ("doh_snapshot",)))
+            except Exception as rollback:
+                raise RuntimeError(f"{exc}; откат DNS не завершён: {rollback}. Снимок сохранён.") from exc
+            raise
+        return True
 
 
-def doh_disable():
-    """Безопасно восстановить DNS, сохранённый до включения DoH."""
-    cfg = load_config()
-    previous = _doh_previous(cfg.get("doh_prev", {}))
-    if not previous:
-        raise RuntimeError("Нет безопасной резервной копии прежнего DNS; восстановите DNS в Windows вручную")
-    pairs = ";".join(
-        f"'{index}'=@({','.join(repr(ip) for ip in servers)})"
-        for index, servers in previous.items()
-    )
-    script = (
-        "$ErrorActionPreference='Stop'\n"
-        f"$previous=@{{{pairs}}}; $changed=@{{}}\n"
-        "try {\n"
-        "  foreach($id in $previous.Keys){\n"
-        "    $changed[$id]=@((Get-DnsClientServerAddress -InterfaceIndex $id -AddressFamily IPv4).ServerAddresses)\n"
-        "    $old=@($previous[$id]); if($old.Count){ Set-DnsClientServerAddress -InterfaceIndex $id -ServerAddresses $old -ErrorAction Stop }else{ Set-DnsClientServerAddress -InterfaceIndex $id -ResetServerAddresses -ErrorAction Stop }\n"
-        "  }\n"
-        "  Clear-DnsClientCache -ErrorAction Stop\n"
-        "} catch {\n"
-        "  foreach($id in $changed.Keys){ $current=@($changed[$id]); if($current.Count){ Set-DnsClientServerAddress -InterfaceIndex $id -ServerAddresses $current -ErrorAction SilentlyContinue }else{ Set-DnsClientServerAddress -InterfaceIndex $id -ResetServerAddresses -ErrorAction SilentlyContinue } }\n"
-        "  throw\n"
-        "}\n"
-    )
-    _ps_checked(script, "Не удалось восстановить DNS")
-    update_config({"doh_enabled": False, "doh_prev": {}})
-    return True
+def doh_disable(legacy_mode=None):
+    with _doh_lock:
+        cfg = load_config()
+        saved = cfg.get("doh_snapshot")
+        if not saved and legacy_mode in ("automatic", "static"):
+            previous = _doh_previous(cfg.get("doh_prev"))
+            current = _dns_snapshot()
+            if not previous or any(index not in current for index in previous):
+                raise RuntimeError("Адаптеры старого снимка отсутствуют; восстановите DNS в Windows")
+            saved = {index: {**current[index], "servers": servers,
+                             "automatic": legacy_mode == "automatic" or not servers}
+                     for index, servers in previous.items()}
+            update_config({"doh_snapshot": saved})
+        if saved:
+            _validate_dns_snapshot(saved)
+            update_config({"doh_pending": True})
+            _dns_apply(saved)
+            update_config({"doh_enabled": False, "doh_pending": False}, remove=("doh_snapshot", "doh_prev"))
+            return True
+        # Old snapshots do not record DHCP/static mode. Do not guess and corrupt it.
+        raise RuntimeError("Нет полного снимка исходного DNS. Восстановите DNS в Windows вручную; сохранённые адреса оставлены в настройках.")
 
 
 # --------------------------------------------------------------------------- #
@@ -1742,8 +1992,7 @@ def cleanup_xbox_legacy():
             others = [ln for ln in existing if ln and ln not in _XBOX_LEGACY_DOMAINS]
             if not others:
                 others = [_EXCLUDE_PLACEHOLDER]
-            with open(LIST_EXCLUDE_USER, "w", encoding="utf-8") as f:
-                f.write("\n".join(others) + "\n")
+            _atomic_write(LIST_EXCLUDE_USER, ("\n".join(others) + "\n").encode("utf-8"))
     except Exception:
         pass
     # 3) очистить флаг в конфиге
@@ -1782,8 +2031,7 @@ def _read_exclude_user():
 def _write_exclude_user(lines):
     lines = [ln for ln in lines if ln and ln != _EXCLUDE_PLACEHOLDER]
     os.makedirs(LISTS, exist_ok=True)
-    with open(LIST_EXCLUDE_USER, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines or [_EXCLUDE_PLACEHOLDER]) + "\n")
+    _atomic_write(LIST_EXCLUDE_USER, ("\n".join(lines or [_EXCLUDE_PLACEHOLDER]) + "\n").encode("utf-8"))
 
 
 def game_exclusions_present():

@@ -29,6 +29,8 @@ for folder in ("bin", "lists"):
 for name in ("LICENSE", "upstream-versions.json"):
     datas.append((os.path.join(ROOT, name), "."))
 datas.append((os.path.join(ROOT, "tgproxy", "LICENSE"), "licenses/tgproxy"))
+for name in ("RELEASE-2.44.0.md", "VALIDATION-2.44.0.md", "PONYTAIL-REVIEW-2.44.0.md"):
+    datas.append((os.path.join(ROOT, "docs", name), "release-notes"))
 
 # декларативные пресеты (единственный источник стратегий)
 if os.path.exists(os.path.join(ROOT, "presets.json")):

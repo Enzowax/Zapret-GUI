@@ -26,7 +26,7 @@ jobs:
       - name: Install test deps
         run: python -m pip install -r requirements-build.txt
       - name: Lint (реальные баги, не стиль)
-        run: python -m ruff check --select=E9,F63,F7,F82 zapret_core.py zapret_app.pyw tgproxy/ tests/ utils/preview_ui.py
+        run: python -m ruff check --select=E9,F63,F7,F82 zapret_core.py zapret_app.pyw zapret_measurements.py zapret_runtime.py zapret_search.py tgproxy/ tests/ utils/preview_ui.py utils/benchmark_ui.py
       - name: Unit tests
         run: python -m pytest tests/ -q
       - name: Check release version

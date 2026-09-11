@@ -24,3 +24,7 @@ logs/
 .write_test.tmp
 .pytest_cache/
 .ruff_cache/
+graphify-out/
+utils/*.broken
+utils/*.backup
+presets.json.backup

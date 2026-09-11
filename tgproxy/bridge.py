@@ -5,7 +5,9 @@ import struct
 from typing import List, Optional
 from urllib.parse import urlencode
 
-from .utils import *
+from .utils import (
+    DC_DEFAULT_IPS, DC_TEST_IPS, List, Optional, PROTO_ABRIDGED_INT, PROTO_INTERMEDIATE_INT, PROTO_PADDED_INTERMEDIATE_INT, ZERO_64, human_bytes, logging
+)
 from .stats import stats
 from .balancer import balancer
 from .config import proxy_config

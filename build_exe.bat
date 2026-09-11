@@ -6,7 +6,7 @@ echo === Сборка ZapretControl (onedir + ZIP) ===
 
 py -3.11 -m pytest tests -q
 if errorlevel 1 exit /b 1
-py -3.11 -m ruff check --select=E9,F63,F7,F82 zapret_core.py zapret_app.pyw tgproxy tests
+py -3.11 -m ruff check --select=E9,F63,F7,F82 zapret_core.py zapret_app.pyw zapret_measurements.py zapret_runtime.py zapret_search.py tgproxy tests utils\preview_ui.py utils\benchmark_ui.py
 if errorlevel 1 exit /b 1
 
 py -3.11 -m PyInstaller --noconfirm --distpath "%~dp0dist" --workpath "%~dp0build" ZapretControl.spec
@@ -20,6 +20,8 @@ if not exist "%~dp0dist\ZapretControl\ZapretControl.exe" (
 
 echo Упаковка в ZapretControl.zip ...
 powershell -NoProfile -Command "Compress-Archive -LiteralPath 'dist\ZapretControl' -DestinationPath 'ZapretControl.zip' -Force -ErrorAction Stop"
+if errorlevel 1 exit /b 1
+powershell -NoProfile -Command "((Get-FileHash 'ZapretControl.zip' -Algorithm SHA256).Hash.ToLowerInvariant() + '  ZapretControl.zip') | Set-Content 'ZapretControl.zip.sha256' -Encoding ascii"
 if errorlevel 1 exit /b 1
 
 echo.
