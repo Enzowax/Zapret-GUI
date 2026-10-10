@@ -859,6 +859,22 @@ class ZapretApp(ctk.CTk):
         self.game_seg.set({"off": "Выкл", "all": "TCP+UDP", "tcp": "TCP",
                            "udp": "UDP"}[zc.get_game_mode()])
 
+        c = self._card_row(p, "🔢", "Порты игрового фильтра",
+                           "TCP и UDP порты через запятую, например 1024-1934,1936-65535")
+        box = ctk.CTkFrame(c, fg_color="transparent")
+        box.grid(row=0, column=2, rowspan=2, padx=14, pady=12)
+        gf_tcp, gf_udp = zc.get_game_ranges()
+        self.game_tcp_var = ctk.StringVar(value=gf_tcp)
+        self.game_udp_var = ctk.StringVar(value=gf_udp)
+        for label, var in (("TCP", self.game_tcp_var), ("UDP", self.game_udp_var)):
+            ctk.CTkLabel(box, text=label, font=(FONT, 12), text_color=MUTED).pack(side="left", padx=(4, 2))
+            entry = ctk.CTkEntry(box, textvariable=var, width=130, height=36, font=(FONT, 13),
+                                 justify="center", fg_color=FIELD_BG, text_color=TEXT,
+                                 border_color=BORDER, border_width=1)
+            entry.pack(side="left", padx=4)
+            self._enable_clipboard(entry)
+        self._btn(box, "Применить", self._on_game_ports_apply, width=110).pack(side="left", padx=4)
+
         c = self._card_row(p, "🚀", "Автозапуск обхода",
                            "Запускать обход при старте приложения")
         self.autostart_switch = self._cfg_switch(
@@ -1878,6 +1894,19 @@ class ZapretApp(ctk.CTk):
         mode = {"Выкл": "off", "TCP+UDP": "all", "TCP": "tcp", "UDP": "udp"}[value]
         zc.set_game_mode(mode)
         self.log_msg(f"Игровой фильтр: {mode}. Перезапустите обход, чтобы применить.")
+
+    def _on_game_ports_apply(self):
+        tcp = zc.normalize_port_ranges(self.game_tcp_var.get())
+        udp = zc.normalize_port_ranges(self.game_udp_var.get())
+        if not tcp or not udp:
+            messagebox.showerror("Игровой фильтр", "Неверные порты. Укажите числа или "
+                                 "диапазоны 1-65535 через запятую, например 1024-65535.")
+            return
+        zc.set_game_mode(zc.get_game_mode(), tcp, udp)
+        self.game_tcp_var.set(tcp)
+        self.game_udp_var.set(udp)
+        self.log_msg(f"Порты игрового фильтра: TCP {tcp}, UDP {udp}. "
+                     "Перезапустите обход, чтобы применить.")
 
     def _on_update_toggle(self):
         en = bool(self.update_switch.get())

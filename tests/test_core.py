@@ -114,6 +114,36 @@ def test_game_filter_values():
     assert zc.game_filter_values("tcp") == ("1024-65535", "12")
     assert zc.game_filter_values("udp") == ("12", "1024-65535")
     assert zc.game_filter_values("bogus") == ("12", "12")     # неизвестное -> выкл
+    assert zc.game_filter_values("all", "80,443", "50000-50100") == ("80,443", "50000-50100")
+
+
+def test_normalize_port_ranges():
+    assert zc.normalize_port_ranges(" 1024-1934, 1936-65535 ") == "1024-1934,1936-65535"
+    assert zc.normalize_port_ranges("443") == "443"
+    for bad in ("", "0", "070", "1-65536", "500-100", "a-b", "1,,2", "-5"):
+        assert zc.normalize_port_ranges(bad) is None, bad
+
+
+def test_game_filter_file_formats(tmp_path, monkeypatch):
+    flag = tmp_path / "game_filter.enabled"
+    monkeypatch.setattr(zc, "UTILS", str(tmp_path))
+    monkeypatch.setattr(zc, "GAME_FLAG", str(flag))
+    assert zc.get_game_mode() == "off"
+    flag.write_text("tcp\r\n", encoding="utf-8")            # старый формат
+    assert zc.get_game_mode() == "tcp"
+    assert zc.get_game_ranges() == ("1024-65535", "1024-65535")
+    # формат service.bat 1.10.3
+    flag.write_text("mode=udp\r\ntcp=80\r\nudp=27000-27100\r\n", encoding="utf-8")
+    assert zc.get_game_mode() == "udp"
+    assert zc.get_game_ranges() == ("80", "27000-27100")
+    assert "--wf-udp=27000-27100" in zc.build_args_str("--wf-udp=%GameFilterUDP%", "udp")
+    zc.set_game_mode("off")                                   # свои порты сохраняются
+    assert flag.read_text(encoding="utf-8").splitlines() == ["mode=disabled", "tcp=80", "udp=27000-27100"]
+    assert zc.get_game_mode() == "off"
+    zc.set_game_mode("all", "1024-65535", "1024-65535")
+    assert zc.get_game_mode() == "all"
+    zc.set_game_mode("off")                                   # всё по умолчанию -> файл удалён
+    assert not flag.exists()
 
 
 def test_preset_id_sanitizes():

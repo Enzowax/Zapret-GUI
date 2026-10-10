@@ -382,12 +382,15 @@ def extract_winws_argstring(bat_path):
     return after.strip()
 
 
-def game_filter_values(mode):
+GAME_DEFAULT_RANGE = "1024-65535"
+
+
+def game_filter_values(mode, tcp_range=GAME_DEFAULT_RANGE, udp_range=GAME_DEFAULT_RANGE):
     return {
         "off": ("12", "12"),
-        "all": ("1024-65535", "1024-65535"),
-        "tcp": ("1024-65535", "12"),
-        "udp": ("12", "1024-65535"),
+        "all": (tcp_range, udp_range),
+        "tcp": (tcp_range, "12"),
+        "udp": ("12", udp_range),
     }.get(mode, ("12", "12"))
 
 
@@ -415,11 +418,12 @@ def tokenize(s):
     return tokens
 
 
-def build_args_str(argstr, mode):
-    """Из строки аргументов с плейсхолдерами -> список аргументов winws.exe."""
+def build_args_str(argstr, mode, ranges=None):
+    """Из строки аргументов с плейсхолдерами -> список аргументов winws.exe.
+    ranges — (tcp, udp) диапазоны игрового фильтра; None — из настроек."""
     if not argstr:
         return None
-    gf_tcp, gf_udp = game_filter_values(mode)
+    gf_tcp, gf_udp = game_filter_values(mode, *(ranges or get_game_ranges()))
     args = tokenize(substitute(argstr, gf_tcp, gf_udp))
     blocks = [[]]
     for arg in args:
@@ -582,25 +586,80 @@ def load_presets():
 # --------------------------------------------------------------------------- #
 #  Настройки
 # --------------------------------------------------------------------------- #
-def get_game_mode():
+def normalize_port_ranges(raw):
+    """Проверить список портов/диапазонов игрового фильтра, как service.bat:
+    «1024-1934,1936-65535». Пробелы убираются. -> строка или None."""
+    s = (raw or "").replace(" ", "")
+    if not s:
+        return None
+    for item in s.split(","):
+        m = re.fullmatch(r"([1-9][0-9]{0,4})(?:-([1-9][0-9]{0,4}))?", item)
+        if not m:
+            return None
+        start, end = int(m.group(1)), int(m.group(2) or m.group(1))
+        if end > 65535 or start > end:
+            return None
+    return s
+
+
+def _read_game_filter():
+    """Разобрать utils/game_filter.enabled -> (mode, tcp_range, udp_range).
+    Понимает старый формат (одно слово all/tcp/udp) и формат service.bat
+    1.10.3+ (строки mode=..., tcp=<порты>, udp=<порты>)."""
+    mode, tcp, udp = "off", GAME_DEFAULT_RANGE, GAME_DEFAULT_RANGE
     if not os.path.exists(GAME_FLAG):
-        return "off"
+        return mode, tcp, udp
     try:
         with open(GAME_FLAG, encoding="utf-8", errors="replace") as f:
-            txt = f.read().strip().lower()
+            lines = f.read().splitlines()
     except Exception:
-        return "off"
-    return txt if txt in ("all", "tcp", "udp") else "udp"
+        return mode, tcp, udp
+    for line in lines:
+        key, _, value = line.strip().partition("=")
+        key, value = key.strip().lower(), value.strip()
+        if key == "mode":
+            mode = value.lower()
+        elif key == "all":
+            mode = "all"
+        elif key in ("tcp", "udp"):
+            if not value:
+                mode = key
+            elif normalize_port_ranges(value):
+                if key == "tcp":
+                    tcp = normalize_port_ranges(value)
+                else:
+                    udp = normalize_port_ranges(value)
+    if mode not in ("all", "tcp", "udp"):
+        mode = "off"
+    return mode, tcp, udp
 
 
-def set_game_mode(mode):
+def get_game_mode():
+    return _read_game_filter()[0]
+
+
+def get_game_ranges():
+    """Диапазоны портов игрового фильтра -> (tcp, udp)."""
+    return _read_game_filter()[1:]
+
+
+def set_game_mode(mode, tcp_range=None, udp_range=None):
+    """Сохранить режим и (опционально) диапазоны портов в формате service.bat,
+    чтобы файл одинаково понимали GUI и батники upstream."""
+    _, cur_tcp, cur_udp = _read_game_filter()
+    tcp = normalize_port_ranges(tcp_range) if tcp_range is not None else cur_tcp
+    udp = normalize_port_ranges(udp_range) if udp_range is not None else cur_udp
+    if tcp is None or udp is None:
+        raise ValueError("Неверные порты: нужны числа или диапазоны 1-65535 через запятую")
     os.makedirs(UTILS, exist_ok=True)
-    if mode == "off":
-        if os.path.exists(GAME_FLAG):
-            os.remove(GAME_FLAG)
-    else:
-        with open(GAME_FLAG, "w", encoding="utf-8") as f:
-            f.write(mode)
+    if mode not in ("all", "tcp", "udp"):
+        if tcp == GAME_DEFAULT_RANGE and udp == GAME_DEFAULT_RANGE:
+            if os.path.exists(GAME_FLAG):
+                os.remove(GAME_FLAG)
+            return
+        mode = "disabled"
+    with open(GAME_FLAG, "w", encoding="utf-8") as f:
+        f.write(f"mode={mode}\ntcp={tcp}\nudp={udp}\n")
 
 
 def get_update_enabled():
