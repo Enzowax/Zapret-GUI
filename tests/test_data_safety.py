@@ -1,3 +1,4 @@
+import os
 import hashlib
 import io
 import json
@@ -242,3 +243,33 @@ def test_media_flag_follows_encrypted_dc_sign(dc):
     result = _try_handshake(wire, secret)
     assert result[0] == abs(dc)
     assert result[1] is (dc < 0)
+
+
+def test_dns_apply_skips_missing_adapter_instead_of_failing(monkeypatch):
+    scripts = []
+    response = SimpleNamespace(returncode=0, stdout="SKIPPED:1\n", stderr="")
+    monkeypatch.setattr(zc, "_ps_checked", lambda script, action: scripts.append(script) or response)
+    assert zc._dns_apply(SNAPSHOT) == 1
+    assert "throw 'Адаптер отсутствует'" not in scripts[0]
+    assert "'Not Present'" in scripts[0]
+
+
+def test_doh_disable_succeeds_when_adapter_was_removed(files, monkeypatch):
+    zc.update_config({"doh_enabled": True, "doh_pending": True, "doh_snapshot": SNAPSHOT})
+    monkeypatch.setattr(zc, "_dns_apply", lambda snapshot: 1)
+    assert zc.doh_disable() == 1
+    cfg = zc.load_config()
+    assert not cfg["doh_enabled"] and not cfg["doh_pending"] and "doh_snapshot" not in cfg
+
+
+def test_config_write_retries_while_file_is_briefly_locked(files, monkeypatch):
+    real_replace, calls = os.replace, []
+    def flaky_replace(src, dst):
+        calls.append(dst)
+        if len(calls) < 3:
+            raise PermissionError(13, "locked")
+        return real_replace(src, dst)
+    monkeypatch.setattr(zc.os, "replace", flaky_replace)
+    monkeypatch.setattr(zc.time, "sleep", lambda s: None)
+    zc.update_config({"strategy": "general"})
+    assert zc.load_config()["strategy"] == "general" and len(calls) == 3

@@ -635,13 +635,29 @@ def ipset_enabled():
     return not get_ipset_status().startswith("none")
 
 
+def _retry_locked(action, attempts=20, delay=0.05):
+    """Повторить файловую операцию, пока файл кратко занят (Windows: AV, индексатор
+    или другой поток держит его открытым — тогда open/os.replace дают PermissionError)."""
+    for attempt in range(attempts):
+        try:
+            return action()
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+
+
+def _read_config_file():
+    with open(CONFIG_FILE, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def load_config():
     try:
-        with open(CONFIG_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-            if not isinstance(data, dict):
-                raise ValueError("Настройки должны быть объектом")
-            return data
+        data = _retry_locked(_read_config_file)
+        if not isinstance(data, dict):
+            raise ValueError("Настройки должны быть объектом")
+        return data
     except FileNotFoundError:
         return {}
     except (ValueError, UnicodeError):
@@ -664,7 +680,7 @@ def _atomic_write(path, data):
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        _retry_locked(lambda: os.replace(tmp, path))
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
@@ -770,7 +786,7 @@ def _validate_config(cfg):
                 "doh_enabled", "doh_pending", "lists_auto_update", "tg_cfproxy", "autostart_proxy"):
         if key in cfg and type(cfg[key]) is not bool:
             raise ValueError(f"Настройка {key} должна быть логической")
-    for key in ("accent_name", "last_working_strategy", "defaults_version"):
+    for key in ("accent_name", "last_working_strategy", "defaults_version", "resume_after_update"):
         if key in cfg and not isinstance(cfg[key], str):
             raise ValueError(f"Неверный тип настройки: {key}")
     for key, choices in (("appearance", ("light", "dark", "system")),
@@ -1092,7 +1108,7 @@ def update_lists():
             files[os.path.join(LISTS, name)] = data
             parts.append(f"{name.replace('list-', '').replace('.txt', '')}: {n}")
         except Exception as e:
-            return False, f"Списки сохранены: {name}: {e}"
+            return False, f"Списки не обновлены: {name}: {e}"
     try:
         with _cfg_write_lock:
             cfg = load_config()
@@ -1867,7 +1883,9 @@ def _validate_dns_snapshot(data):
 def _dns_apply(snapshot, ips=None):
     # Restrict changes to IPv4 and resolve adapters by GUID (indices can be reused).
     _validate_dns_snapshot(snapshot)
-    commands = ["$ErrorActionPreference='Stop'", "$errors=@()"]
+    # An adapter that was removed or unplugged since the snapshot is skipped,
+    # otherwise one missing VPN/USB adapter would block restoring all others.
+    commands = ["$ErrorActionPreference='Stop'", "$errors=@()", "$skipped=0"]
     for entry in snapshot.values():
         import uuid
         guid = str(uuid.UUID(entry["guid"]))
@@ -1876,7 +1894,7 @@ def _dns_apply(snapshot, ips=None):
         commands += [
             "try {",
             f"$a=Get-NetAdapter -IncludeHidden | Where-Object {{$_.InterfaceGuid.ToString().Trim('{{}}') -eq '{guid}'}}",
-            "if(-not $a){ throw 'Адаптер отсутствует' }",
+            "if(-not $a -or $a.Status -eq 'Not Present'){ $skipped++ } else {",
             "$dns=Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction Stop",
         ]
         if automatic:
@@ -1889,9 +1907,12 @@ def _dns_apply(snapshot, ips=None):
             commands.append("$dns | Set-DnsClientServerAddress -ServerAddresses $expected -ErrorAction Stop")
             commands.append("$actual=@((Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4).ServerAddresses)")
             commands.append("if($actual.Count -ne $expected.Count -or (Compare-Object $actual $expected)){throw 'DNS не применён'}")
-        commands.append("} catch { $errors += $_.Exception.Message }")
-    commands += ["if($errors.Count){throw ($errors -join '; ')}", "Clear-DnsClientCache -ErrorAction Stop"]
-    _ps_checked("\n".join(commands), "Не удалось применить DNS")
+        commands.append("} } catch { $errors += $_.Exception.Message }")
+    commands += ["if($errors.Count){throw ($errors -join '; ')}", "Clear-DnsClientCache -ErrorAction Stop",
+                 "'SKIPPED:'+$skipped"]
+    res = _ps_checked("\n".join(commands), "Не удалось применить DNS")
+    match = re.search(r"SKIPPED:(\d+)", getattr(res, "stdout", "") or "")
+    return int(match[1]) if match else 0
 
 
 def doh_enable(provider="cloudflare"):
@@ -1945,9 +1966,10 @@ def doh_disable(legacy_mode=None):
         if saved:
             _validate_dns_snapshot(saved)
             update_config({"doh_pending": True})
-            _dns_apply(saved)
+            skipped = _dns_apply(saved)
             update_config({"doh_enabled": False, "doh_pending": False}, remove=("doh_snapshot", "doh_prev"))
-            return True
+            # True при полном восстановлении; иначе число пропущенных адаптеров
+            return skipped or True
         # Old snapshots do not record DHCP/static mode. Do not guess and corrupt it.
         raise RuntimeError("Нет полного снимка исходного DNS. Восстановите DNS в Windows вручную; сохранённые адреса оставлены в настройках.")
 
