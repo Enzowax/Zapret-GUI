@@ -2,7 +2,7 @@
   "version": 1,
   "upstream": {
     "repository": "Flowseal/zapret-discord-youtube",
-    "tag": "1.10.2"
+    "tag": "1.10.3"
   },
   "presets": [
     {

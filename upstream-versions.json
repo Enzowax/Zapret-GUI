@@ -1,15 +1,16 @@
 {
   "zapret": {
     "repository": "Flowseal/zapret-discord-youtube",
-    "tag": "1.10.2"
+    "tag": "1.10.3"
   },
   "tgproxy": {
     "repository": "Flowseal/tg-ws-proxy",
-    "tag": "v1.10.2",
+    "tag": "v1.11.1",
     "local_patches": [
       "bounded CF worker HTTP 429 backoff",
       "explicit imports and embedded package entrypoint",
-      "embedded lifecycle cancellation"
+      "embedded lifecycle cancellation",
+      "Python 3.11 wait_for cancellation safety"
     ]
   },
   "sha256": {
@@ -29,23 +30,27 @@
     "bin/tls_clienthello_max_ru.bin": "4ee0870abe0a0128600b0095189987ba1d210dae8bf963bc725aff49cf922624",
     "bin/tls_clienthello_sochi_park.bin": "ad552922acfe029521da884ea29f4bb28bb6bdcee9b1a70b46adbfd266c11d4d",
     "bin/tls_clienthello_www_google_com.bin": "936c2bee4cfb80aa3c426b2dcbcc834b3fbcd1adb17172959dc569c73a14275c",
+    "bin/tls_clienthello_www_sferum_ru.bin": "e6dd8d724eecc6a7340bf64e2ebec81c60bc4e078c6f702b4b6ba9bf184180ad",
     "bin/WinDivert.dll": "c1e060ee19444a259b2162f8af0f3fe8c4428a1c6f694dce20de194ac8d7d9a2",
     "bin/WinDivert64.sys": "8da085332782708d8767bcace5327a6ec7283c17cfb85e40b03cd2323a90ddc2",
     "bin/winws.exe": "affb4f69d2ea302a7abccd5325d81826e140ddae014f1e070bc4a6c0dd555188",
-    "lists/list-general.txt": "9ff3ae9e4bf0edbcf8fecb1bba7aac951aace2036cdb732ec3ef65dfc6db443b",
-    "lists/list-exclude.txt": "140adb9205bcc4477ed1dc3b8ef82ddc3ed05985126a606ff2b2c2d2b98694fd",
-    "lists/list-google.txt": "1e59f9d487f7bce12091c838151713d0a8d31c3aae20afefebb38206f2cd8232",
     "lists/ipset-exclude.txt": "96c03954012765ce4ab03b9c30f29ab1ca1b698c6752224d03828e6d182eb0fc",
-    "tgproxy/balancer.py": "3d4330488b968e146286b14790c0814eae3efe5d0f26206572369ca6368eed24",
-    "tgproxy/bridge.py": "844053a091ce2811a337b9be76e868af1fb7dc902bc6678e1e8deb8d86afaf4c",
-    "tgproxy/config.py": "5abd7abc1ebab88ec8554923e4ef5cd3f90c4937c88ed899ed91c66fe0b34d88",
-    "tgproxy/fake_tls.py": "ce4ce10990117f96522558bc38f2798630b4b736854fd0bf738ba886332b9cb9",
-    "tgproxy/pool.py": "8672a710baa3c03398273809cf26692e3bc35321840ffe2306e15cd0bc522ffe",
-    "tgproxy/raw_websocket.py": "7dfd829ac33fbfaa41801a37231d3e00e1d61fdc4e190ec52ba5e6e2aa7f3312",
-    "tgproxy/stats.py": "be6174fe31392288c136cbd4ba9537cfb16efc839a148ae35aca7c467aeea73d",
-    "tgproxy/tg_ws_proxy.py": "e1921272b8526ea8d13ac1a509e6e550f54e5bf8165308fff2ee20d429cc8a20",
-    "tgproxy/utils.py": "7873c94c43e06ff54714758b196e89ce137a99beebc660e5ffce9a358ecbdc98",
+    "lists/list-exclude.txt": "c5eaabb284d9e5c11340454c0d11776f8b62f519e4d71e41254f757de7bbc0d0",
+    "lists/list-general.txt": "9ff3ae9e4bf0edbcf8fecb1bba7aac951aace2036cdb732ec3ef65dfc6db443b",
+    "lists/list-google.txt": "4104b8f5119f76a3642e3176987bbcf817d98daa4899a7ecf9ee2c254958e33b",
+    "tgproxy/__init__.py": "d8fba4a6956dbd2ce369f6bfc3950cf51d6ca18d1268dd42b1df3b03b9f4da82",
     "tgproxy/_aes.py": "5b07f23c1d65140fb933e2c31d42817012d2ff4b60664f69146fe2554d54d528",
-    "tgproxy/__init__.py": "4c07c2b45c558065ea44527efa6deece904aeb55f41d498becf76f80e3031a30"
+    "tgproxy/balancer.py": "3d4330488b968e146286b14790c0814eae3efe5d0f26206572369ca6368eed24",
+    "tgproxy/bridge.py": "945b89df1a173d0bd57c071e10cb8845fce5d82b671ba29502919693e9afa26d",
+    "tgproxy/cf_h2.py": "0c34490a2c3e26fb264f005d8cefc8d7d7a0fea627f6d7986678b1dadbc4f667",
+    "tgproxy/config.py": "7d3b83a72d9d91db397a19c25cb5a3b5211f8c5aaf52235b7e03e0bc7293c6be",
+    "tgproxy/fake_tls.py": "14fe4791543a208ab29f0a2459150931573d2ffeffd6444683d8895a8c4ad86e",
+    "tgproxy/h2_transport.py": "d6da47e18f22cd688544abc027d0babf4616064ead1c6be78ca59cb0b042b2e2",
+    "tgproxy/network_debug.py": "4a4d014c764439df076d15cbbaae819411fd0c5da0cf7fb9b3a630bf0ddeca2d",
+    "tgproxy/pool.py": "6ae6e1af513f3a0918544f57fa545c80db37d701517d0e7a4107796a9fac51f9",
+    "tgproxy/raw_websocket.py": "43c6530fdfbeb34fd278ac1f2a73870d169fa36fc9df2e1d6787e35f95fe21ea",
+    "tgproxy/stats.py": "4a54b09e384d77677e48bef81ac0ecfc201278ec5462aafd7ce4a5edd91270a7",
+    "tgproxy/tg_ws_proxy.py": "3759c6f7f22f7ff4be6e0ae00ed4c78eef3c2626ac045465fcc5039422d310bd",
+    "tgproxy/utils.py": "272282fe1cee86e2a5135d532d8a816f08f1b3db530deef3895a07bfb13e4a87"
   }
 }
