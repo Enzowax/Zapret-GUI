@@ -120,6 +120,7 @@ def _apply_accent(name):
 
 
 APP_NAME = "Zapret GUI"
+LISTS_CHECK_INTERVAL_MS = 6 * 3600 * 1000    # как часто проверять срок обновления списков
 
 
 class ZapretApp(ctk.CTk):
@@ -205,9 +206,14 @@ class ZapretApp(ctk.CTk):
         self.after(900, self._startup_service_restore)
         self.after(2200, self._repair_autostart_bg)
         self._bg(self._watchdog_loop)
+        resume = self.cfg.pop("resume_after_update", None)
+        if resume:
+            zc.update_config({}, remove=("resume_after_update",))
         if self.autostart_launch:
             # запуск при входе в систему: поднять обход и прокси, свернуться в трей
             self.after(800, self._autostart_full)
+        elif isinstance(resume, str):
+            self.after(1400, lambda: self._resume_after_update(resume))
         elif self.cfg.get("autostart_bypass"):
             self.after(1400, self._autostart_bypass)
         if not self.autostart_launch:
@@ -1931,7 +1937,7 @@ class ZapretApp(ctk.CTk):
 
     def _watchdog_loop(self):
         failures, healthy = {}, 0
-        network = None
+        network = unknown = object()     # первая проверка только запоминает сеть
         episode_token = self.runtime.token
         while not self._closing:
             token = self.runtime.token
@@ -1947,7 +1953,9 @@ class ZapretApp(ctk.CTk):
                 if self.runtime.desired == "stopped":
                     continue
                 current_network = zc.network_identity()
-                if current_network != network:
+                if network is unknown:
+                    network = current_network
+                elif current_network != network:
                     token = self.runtime.request(expected=token)
                     if token is None:
                         continue
@@ -2441,8 +2449,12 @@ class ZapretApp(ctk.CTk):
         self.after(20000, self._health_auto)
 
     def _startup_lists_check(self):
-        """Раз в неделю (если включено) подтянуть свежие списки и IPSet из upstream."""
-        if self._closing or not zc.lists_update_due():
+        """Раз в неделю (если включено) подтянуть свежие списки и IPSet из upstream.
+        Проверка повторяется, пока приложение работает (например, неделями в трее)."""
+        if self._closing:
+            return
+        self.after(LISTS_CHECK_INTERVAL_MS, self._startup_lists_check)
+        if not zc.lists_update_due():
             return
         self.log_msg("[Списки] плановое автообновление (списки + IPSet)…")
         self.on_update_lists(silent=True, restart_if_running=True, include_ipset=True)
@@ -2616,14 +2628,65 @@ class ZapretApp(ctk.CTk):
         self._bg(worker)
 
     def _quit_for_update(self):
+        if self._closing:
+            return
         self.log_msg("Закрываю приложение для применения обновления…")
+        # Свой winws останавливаем: иначе он переживёт обновление, и новая копия
+        # не сможет им управлять. После перезапуска обход поднимется снова.
+        resume = (self.active_preset_name
+                  if self.proc and self.proc.poll() is None else None)
+        self.auto_cancel = True
         self._closing = True
-        zc.tg_proxy_stop()
-        if self.tray is not None:
-            self.tray.stop()
-        if self._logf:
-            self._logf.close()
-        self.destroy()
+        self.runtime.close()
+        errors = []
+
+        def cleanup():
+            try:
+                with self.runtime.lock:
+                    self._stop_local_winws()
+                if resume:
+                    zc.update_config({"resume_after_update": resume})
+            except Exception as exc:
+                errors.append(f"обход: {exc}")
+            try:
+                zc.tg_proxy_stop()
+            except Exception as exc:
+                errors.append(f"прокси: {exc}")
+            if self.tray is not None:
+                try:
+                    self.tray.stop()
+                except Exception as exc:
+                    errors.append(f"трей: {exc}")
+        shutdown = threading.Thread(target=cleanup, daemon=True)
+        shutdown.start()
+
+        def finish():
+            # Окно закрывается в любом случае: скрипт обновления ждёт выхода процесса.
+            if shutdown.is_alive():
+                self.after(100, finish)
+                return
+            try:
+                if self._logf:
+                    for err in errors:
+                        self._logf.write(f"[обновление] не удалось остановить {err}\n")
+                    self._logf.close()
+            except OSError:
+                pass
+            self.destroy()
+        finish()
+
+    def _resume_after_update(self, name):
+        """Вернуть обход, остановленный перед самообновлением."""
+        if self._closing or getattr(self, "_startup_cancelled", False):
+            return
+        if self._managed_bypass_running() or zc.winws_running():
+            return
+        if name not in self.preset_by_name:
+            self.log_msg(f"После обновления не найден пресет «{name}»; обход не запущен.")
+            return
+        self.log_msg(f"Возвращаю обход после обновления: «{name}».")
+        self.strategy_var.set(name)
+        self.on_start()
 
     def show_args(self):
         preset = self._selected_preset()
@@ -2742,8 +2805,11 @@ class ZapretApp(ctk.CTk):
                     zc.doh_enable(prov)
                     self.log_msg(f"DoH включён ({prov}): системный DNS переведён на провайдера.")
                 else:
-                    zc.doh_disable(legacy_mode=legacy_mode)
+                    restored = zc.doh_disable(legacy_mode=legacy_mode)
                     self.log_msg("DoH выключен: прежний DNS восстановлен.")
+                    if restored is not True:
+                        self.log_msg(f"[!] DNS: пропущено отсутствующих сетевых адаптеров: {restored}. "
+                                     "Если адаптер вернётся, проверьте его DNS в настройках Windows.")
             except Exception as e:
                 self.log_msg(f"[ОШИБКА] DNS: {e}")
                 self.post(self._restore_doh_controls)
@@ -3071,12 +3137,25 @@ class ZapretApp(ctk.CTk):
             self._auto_autoapply = False
             if self.auto_best:
                 name = self.auto_best[0]
-                self.log_msg(f"[watchdog] применяю найденную стратегию «{name}»")
+                self.log_msg(f"[Авто-поиск] применяю найденную стратегию «{name}»")
                 token = self._auto_token
-                self._bg(lambda n=name: self._switch_to(n, token))
+                if self.runtime.desired == "stopped":
+                    # обход не работал (первый запуск) — «применить» значит запустить
+                    token = self.runtime.request("manual", expected=token)
+                if token is not None:
+                    self._bg(lambda n=name, t=token: self._apply_found(n, t))
             else:
                 self._notify("Авто-поиск", "Рабочая стратегия не найдена.")
         self.refresh_status()
+
+    def _apply_found(self, name, token):
+        try:
+            if not self._switch_to(name, token):
+                self.log_msg(f"[Авто-поиск] не удалось запустить «{name}».")
+        except Superseded:
+            pass
+        except Exception as exc:
+            self.log_msg(f"[Авто-поиск] {name}: {exc}")
 
     def on_apply_best(self):
         if self.auto_running or not self.auto_best:

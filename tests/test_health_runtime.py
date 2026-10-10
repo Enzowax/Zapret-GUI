@@ -543,3 +543,50 @@ def test_quit_defers_process_cleanup_and_destroys_only_after_it_finishes(monkeyp
     scheduled.pop(0)()
     assert stopped == [True] and destroyed == [True]
     assert app.runtime.closed
+
+
+def test_autoapply_after_search_starts_bypass_when_it_was_stopped():
+    """«Подобрать настройку» на выключенном обходе должна запустить найденную стратегию."""
+    app = app_stub(runtime=RuntimeController(), proc=None, active_args=None,
+                   active_preset_name=None, _auto_autoapply=True, _auto_completed=True,
+                   _auto_context={}, _previous_search=None, recovery_switch=Widget())
+    app._apply_found = MethodType(ui.ZapretApp._apply_found, app)
+    app.tree = SimpleNamespace(get_children=lambda: [], item=lambda *a, **k: None,
+                               see=lambda *a: None)
+    spawned = []
+    app._spawn_winws = lambda args, name=None: spawned.append(name)
+    app._search_results = [SearchResult("new", {"discord": 3}, 3, 9, 9, 50.0)]
+    app._auto_done()
+    assert spawned == ["new"]
+    assert app.runtime.desired == "manual"
+    assert app.cfg["strategy"] == "new"
+
+
+def test_watchdog_first_tick_does_not_treat_network_as_changed():
+    app = app_stub()
+    app.cfg["auto_recovery"] = True
+    first = app.runtime.token
+    run_watchdog(app, 1)
+    assert app.runtime.token is first
+
+
+def test_quit_for_update_stops_own_winws_and_remembers_it(monkeypatch):
+    work, scheduled, stopped, destroyed, saved = [], [], [], [], []
+    app = app_stub(tray=None, _logf=io.StringIO())
+    app.after = lambda delay, callback: scheduled.append(callback)
+    app._stop_local_winws = lambda: stopped.append(True)
+    app.destroy = lambda: destroyed.append(True)
+    monkeypatch.setattr(zc, "update_config", lambda changes, remove=(): saved.append(changes))
+    def failing_stop():
+        raise RuntimeError("Прокси ещё останавливается")
+    monkeypatch.setattr(zc, "tg_proxy_stop", failing_stop)
+    alive = [True]
+    monkeypatch.setattr(ui.threading, "Thread", lambda **kw: SimpleNamespace(
+        start=lambda: work.append(kw["target"]), is_alive=lambda: alive[0]))
+    ui.ZapretApp._quit_for_update(app)
+    assert work and scheduled and not destroyed
+    work[0]()
+    alive[0] = False
+    scheduled.pop(0)()
+    assert stopped == [True] and destroyed == [True]
+    assert saved == [{"resume_after_update": "old"}]
