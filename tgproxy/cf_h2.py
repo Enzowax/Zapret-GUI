@@ -16,7 +16,7 @@ from .h2_transport import H2Transport
 from .stats import stats
 from .utils import (
     DC_DEFAULT_IPS, PROTO_TAG_ABRIDGED,
-    PROTO_TAG_SECURE, create_ssl_context,
+    PROTO_TAG_SECURE, create_ssl_context, wait_for,
 )
 
 log = logging.getLogger('tg-mtproto-proxy')
@@ -376,7 +376,7 @@ class _HttpChannel:
                 return False
             if not replay:
                 self.upload_wait_phase = 'channel-capacity'
-                await asyncio.wait_for(self.capacity.wait_for(lambda: self.closed or self._has_capacity(len(body))),
+                await wait_for(self.capacity.wait_for(lambda: self.closed or self._has_capacity(len(body))),
                                        REQUEST_TIMEOUT)
         if self.closed:
             raise ConnectionError('H2 channel closed')
@@ -528,7 +528,11 @@ class _HttpChannel:
             try:
                 await asyncio.wait_for(self.recovery_wakeup.wait(), REPLAY_CHECK_SECONDS)
             except asyncio.TimeoutError:
-                pass
+                # Python 3.11: wait_for may turn a cancel() racing with the
+                # timeout into TimeoutError; re-raise so the loop stops.
+                task = asyncio.current_task()
+                if task is not None and getattr(task, 'cancelling', lambda: 0)():
+                    raise asyncio.CancelledError() from None
             self.recovery_wakeup.clear()
             now = time.monotonic()
             self.lane.log_wait(now)
@@ -649,7 +653,7 @@ class _HttpLane:
             if not wait and not self._has_capacity(length):
                 return False
             if wait:
-                await asyncio.wait_for(self.capacity.wait_for(lambda: self.closed or self._has_capacity(length)),
+                await wait_for(self.capacity.wait_for(lambda: self.closed or self._has_capacity(length)),
                                        REQUEST_TIMEOUT)
             if self.closed:
                 raise ConnectionError('H2 lane closed')
@@ -859,7 +863,7 @@ class CfH2Pool:
         if time.monotonic() < self.setup_retry_after.get(dc, 0):
             return None
         try:
-            return await asyncio.wait_for(self._open(dc, label), SETUP_TIMEOUT)
+            return await wait_for(self._open(dc, label), SETUP_TIMEOUT)
         except asyncio.TimeoutError:
             self.setup_retry_after[dc] = time.monotonic() + DOMAIN_COOLDOWN
             stats.h2_errors += 1

@@ -7,7 +7,7 @@ import socket as _socket
 
 from typing import List, Optional, Tuple
 from .config import proxy_config
-from .utils import create_ssl_context
+from .utils import create_ssl_context, wait_for
 
 log = logging.getLogger('tg-mtproto-proxy')
 
@@ -91,7 +91,7 @@ class RawWebSocket:
         if sni is None:
             sni = domain
 
-        reader, writer = await asyncio.wait_for(
+        reader, writer = await wait_for(
             (
                 asyncio.open_connection(
                     host, 443,
@@ -125,7 +125,7 @@ class RawWebSocket:
 
             response_lines: list[str] = []
             while True:
-                line = await asyncio.wait_for(reader.readline(),
+                line = await wait_for(reader.readline(),
                                               timeout=timeout)
                 if line in (b'\r\n', b'\n', b''):
                     break

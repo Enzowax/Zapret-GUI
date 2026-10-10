@@ -1,4 +1,6 @@
+import asyncio
 import socket as _socket
+import sys
 import urllib.request
 import http.client
 import ssl
@@ -150,3 +152,24 @@ def create_ssl_context(*, check_hostname: bool = True) -> ssl.SSLContext:
 def build_github_opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(
         _PinnedHTTPSHandler(context=create_ssl_context()))
+
+
+if sys.version_info[:2] == (3, 11):
+    async def wait_for(aw, timeout):
+        """asyncio.wait_for из Python 3.12+: в 3.11 wait_for может проглотить
+        cancel(), пришедший одновременно с завершением/таймаутом (gh-86296),
+        и отменённая задача продолжает работать."""
+        if timeout is not None and timeout <= 0:
+            fut = asyncio.ensure_future(aw)
+            if fut.done():
+                return fut.result()
+            fut.cancel()
+            await asyncio.gather(fut, return_exceptions=True)
+            try:
+                return fut.result()
+            except asyncio.CancelledError as exc:
+                raise TimeoutError from exc
+        async with asyncio.timeout(timeout):
+            return await aw
+else:
+    wait_for = asyncio.wait_for

@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urlencode
 
 from .utils import (
-    DC_DEFAULT_IPS, DC_TEST_IPS, PROTO_ABRIDGED_INT, PROTO_INTERMEDIATE_INT, PROTO_PADDED_INTERMEDIATE_INT, human_bytes
+    wait_for, DC_DEFAULT_IPS, DC_TEST_IPS, PROTO_ABRIDGED_INT, PROTO_INTERMEDIATE_INT, PROTO_PADDED_INTERMEDIATE_INT, human_bytes
 )
 from .stats import stats
 from .balancer import balancer
@@ -294,7 +294,7 @@ async def _tcp_fallback(reader, writer, dst, port, relay_init, label, ctx: Crypt
     try:
         try:
             log.info("[%s] TCP fallback to %s:%d", label, dst, port)
-            rr, rw = await asyncio.wait_for(
+            rr, rw = await wait_for(
                 asyncio.open_connection(dst, port), timeout=10)
             rw.write(relay_init)
             await rw.drain()

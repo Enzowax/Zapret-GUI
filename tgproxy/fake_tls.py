@@ -11,6 +11,7 @@ import logging
 
 from typing import Optional, Tuple
 from .stats import stats
+from .utils import wait_for
 
 
 log = logging.getLogger('tg-mtproto-proxy')
@@ -210,7 +211,7 @@ class FakeTlsStream:
 async def proxy_to_masking_domain(reader, writer, initial_data: bytes,
                                     domain: str, label: str) -> None:
     try:
-        up_reader, up_writer = await asyncio.wait_for(
+        up_reader, up_writer = await wait_for(
             asyncio.open_connection(domain, 443), timeout=10)
     except Exception as exc:
         log.warning("[%s] masking: cannot connect to %s:443: %s",

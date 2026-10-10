@@ -20,7 +20,7 @@ if __name__ == '__main__' and (__package__ is None or __package__ == ''):
     __package__ = 'tgproxy'
 
 from .utils import (
-    DC_IDX_POS, DomainCensorFilter, HANDSHAKE_LEN, IV_LEN, KEY_LEN, PREKEY_LEN, PROTO_ABRIDGED_INT, PROTO_INTERMEDIATE_INT, PROTO_PADDED_INTERMEDIATE_INT, PROTO_TAG_ABRIDGED, PROTO_TAG_INTERMEDIATE, PROTO_TAG_POS, PROTO_TAG_SECURE, RESERVED_CONTINUE, RESERVED_FIRST_BYTES, RESERVED_STARTS, SKIP_LEN, ZERO_64, get_link_host
+    wait_for, DC_IDX_POS, DomainCensorFilter, HANDSHAKE_LEN, IV_LEN, KEY_LEN, PREKEY_LEN, PROTO_ABRIDGED_INT, PROTO_INTERMEDIATE_INT, PROTO_PADDED_INTERMEDIATE_INT, PROTO_TAG_ABRIDGED, PROTO_TAG_INTERMEDIATE, PROTO_TAG_POS, PROTO_TAG_SECURE, RESERVED_CONTINUE, RESERVED_FIRST_BYTES, RESERVED_STARTS, SKIP_LEN, ZERO_64, get_link_host
 )
 from .stats import stats
 from .config import proxy_config, parse_dc_ip_list, start_cfproxy_domain_refresh, coerce_domain_list
@@ -108,7 +108,7 @@ def _generate_relay_init(proto_tag: bytes, dc_idx: int) -> bytes:
 async def _read_client_init(reader, writer, secret, label, masking):
     if proxy_config.proxy_protocol:
         try:
-            pp_line = await asyncio.wait_for(
+            pp_line = await wait_for(
                 reader.readline(), timeout=10)
         except asyncio.IncompleteReadError:
             log.debug("[%s] disconnected during PROXY header", label)
@@ -124,7 +124,7 @@ async def _read_client_init(reader, writer, secret, label, masking):
                       pp_text[:60])
 
     try:
-        first_byte = await asyncio.wait_for(
+        first_byte = await wait_for(
             reader.readexactly(1), timeout=10)
     except asyncio.IncompleteReadError:
         log.debug("[%s] client disconnected before handshake", label)
@@ -132,7 +132,7 @@ async def _read_client_init(reader, writer, secret, label, masking):
 
     if first_byte[0] == TLS_RECORD_HANDSHAKE and masking:
         try:
-            hdr_rest = await asyncio.wait_for(
+            hdr_rest = await wait_for(
                 reader.readexactly(4), timeout=10)
         except asyncio.IncompleteReadError:
             log.debug("[%s] incomplete TLS record header", label)
@@ -142,7 +142,7 @@ async def _read_client_init(reader, writer, secret, label, masking):
         record_len = struct.unpack('>H', tls_header[3:5])[0]
 
         try:
-            record_body = await asyncio.wait_for(
+            record_body = await wait_for(
                 reader.readexactly(record_len), timeout=10)
         except asyncio.IncompleteReadError:
             log.debug("[%s] incomplete TLS record body", label)
@@ -170,7 +170,7 @@ async def _read_client_init(reader, writer, secret, label, masking):
         tls_stream = FakeTlsStream(reader, writer)
 
         try:
-            handshake = await asyncio.wait_for(
+            handshake = await wait_for(
                 tls_stream.readexactly(HANDSHAKE_LEN), timeout=10)
         except asyncio.IncompleteReadError:
             log.debug("[%s] incomplete obfs2 init inside TLS", label)
@@ -193,7 +193,7 @@ async def _read_client_init(reader, writer, secret, label, masking):
 
     else:
         try:
-            rest = await asyncio.wait_for(
+            rest = await wait_for(
                 reader.readexactly(HANDSHAKE_LEN - 1), timeout=10)
         except asyncio.IncompleteReadError:
             log.debug("[%s] client disconnected before handshake", label)
