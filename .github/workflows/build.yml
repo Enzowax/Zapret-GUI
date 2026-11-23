@@ -56,6 +56,12 @@ jobs:
 
       - name: Package ZIP
         run: |
+          $env:__COMPAT_LAYER = 'RunAsInvoker'
+          $process = Start-Process -FilePath '.\dist\ZapretControl\ZapretControl.exe' -WorkingDirectory $PWD -ArgumentList '--smoke-test', 'smoke.json' -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0 -or !(Test-Path smoke.json)) { throw 'EXE smoke test failed' }
+          $report = Get-Content smoke.json -Raw | ConvertFrom-Json
+          if (!$report.ok) { throw 'EXE smoke test failed' }
+          "release_notes=docs/RELEASE-$($report.version).md" >> $env:GITHUB_ENV
           Compress-Archive -Path dist/ZapretControl -DestinationPath ZapretControl.zip -Force
           $hash = (Get-FileHash ZapretControl.zip -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  ZapretControl.zip" | Set-Content ZapretControl.zip.sha256 -Encoding ascii
@@ -73,6 +79,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: Zapret GUI ${{ github.ref_name }}
+          body_path: ${{ env.release_notes }}
           generate_release_notes: true
           files: |
             ZapretControl.zip

@@ -27,6 +27,40 @@ from tgproxy.config import proxy_config
 from tgproxy.utils import PROTO_TAG_ABRIDGED, PROTO_TAG_INTERMEDIATE, PROTO_TAG_SECURE
 
 
+class H2ContextTest(unittest.IsolatedAsyncioTestCase):
+    async def test_lanes_reuse_verified_context_without_changing_websocket_contexts(self):
+        from tgproxy.h2_transport import _default_ssl_context
+        from tgproxy.raw_websocket import _ssl_ctx, _ssl_ctx_fronting
+        from tgproxy.utils import create_ssl_context
+
+        _default_ssl_context.cache_clear()
+        self.addCleanup(_default_ssl_context.cache_clear)
+        lanes = []
+        try:
+            with patch('tgproxy.h2_transport.create_ssl_context', wraps=create_ssl_context) as create:
+                lanes = [_HttpLane('kws4.example.org', 1), _HttpLane('kws2.example.net', 2)]
+                create.assert_called_once_with()
+            first, second = (lane.client._transport.ssl_context for lane in lanes)
+            self.assertIs(first, second)
+            self.assertIsNot(first, _ssl_ctx)
+            self.assertIsNot(first, _ssl_ctx_fronting)
+            self.assertTrue(first.check_hostname)
+            self.assertEqual(first.verify_mode, ssl.CERT_REQUIRED)
+            self.assertTrue(_ssl_ctx.check_hostname)
+            self.assertFalse(_ssl_ctx_fronting.check_hostname)
+            self.assertEqual(set(first.get_ca_certs(binary_form=True)),
+                             set(_ssl_ctx.get_ca_certs(binary_form=True)))
+
+            custom = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            custom.check_hostname = False
+            transport = H2Transport(custom)
+            self.assertIs(transport.ssl_context, custom)
+            self.assertTrue(first.check_hostname)
+            await transport.aclose()
+        finally:
+            await asyncio.gather(*(lane.close() for lane in lanes))
+
+
 class H2WireTest(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
@@ -163,6 +197,14 @@ class H2WireTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(slow1, slow2)
         self.assertEqual(len(self.connections), 1)
 
+    async def test_shared_default_context_rejects_untrusted_certificate(self):
+        async with httpx.AsyncClient(transport=H2Transport(), trust_env=False) as client:
+            with self.assertRaises(httpx.ConnectError):
+                await client.get('https://' + self.lane.host + '/api')
+        task, request = await self.post()
+        self.respond(request)
+        self.assertEqual(await asyncio.wait_for(task, 1), b'r' * 40)
+
     async def test_debug_trace_follows_real_stream_without_logging_payload(self):
         channel = _HttpChannel(self.lane, 1, 'trace-test')
         body = b'private-payload-' + b'x' * 24
@@ -265,8 +307,7 @@ class H2WireTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fresh[2], bodies[2])
             self.respond(fresh, b'n' * 40)
             self.assertEqual(await asyncio.wait_for(channel.receive(), 1), b'n' * 40)
-            # Once the late poll completes the channel is idle and recovery may
-            # legitimately open the next long poll, so stop it before replying.
+            # Stop the poll scheduler before the reply makes this channel idle again.
             recovery.cancel()
             await asyncio.gather(recovery, return_exceptions=True)
             self.assertEqual(channel.replay_rotations, 0)
@@ -569,8 +610,12 @@ class H2WireTest(unittest.IsolatedAsyncioTestCase):
                             peers.append(peer)
                             bodies = [b'\x00' * 8 + os.urandom(8) + struct.pack('<I', 20) + os.urandom(20)]
                             bodies += [b'samekey!' + os.urandom(size - 8) for size in (40, 131112, 56)]
+                            # Maximum extended plaintext padding: MTProtoKit
+                            # (236 + 15) and Android (256), not just TCP's 15.
+                            plain_padding = (251, 256)[index]
                             wire = init + up.update(b''.join(
-                                frame(body, tag, padding) for body, padding in zip(bodies, (15, 1, 7, 0))))
+                                frame(body, tag, padding)
+                                for body, padding in zip(bodies, (plain_padding, 1, 7, 0))))
                             for start, end in ((0, 13), (13, 57), (57, 65), (65, 78), (78, len(wire))):
                                 writer.write(wire[start:end])
                                 await writer.drain()
@@ -775,6 +820,7 @@ class H2WireTest(unittest.IsolatedAsyncioTestCase):
         original = None
         recovered = asyncio.Event()
         chatter_reply = asyncio.Event()
+        history_full = asyncio.Event()
         chatter_requests = 0
 
         async def server():
@@ -805,6 +851,8 @@ class H2WireTest(unittest.IsolatedAsyncioTestCase):
                     recovered.set()
                 else:
                     chatter_reply.set()
+                    if chatter_requests > 3:
+                        history_full.set()
 
         with patch('tgproxy.cf_h2.REPLAY_IDLE_SECONDS', .05), \
                 patch('tgproxy.cf_h2.REPLAY_CHECK_SECONDS', .005), \
@@ -812,8 +860,11 @@ class H2WireTest(unittest.IsolatedAsyncioTestCase):
                 patch('tgproxy.cf_h2.REPLAY_HISTORY_PACKETS', 3):
             await channel.send(body, False)
             self.tasks.extend(asyncio.create_task(coro) for coro in (
-                server(), chatter(), receiver(), channel._recover()))
-            await asyncio.wait_for(recovered.wait(), .6)
+                server(), chatter(), receiver()))
+            # Exercise recovery after newer replies have actually filled the history.
+            await asyncio.wait_for(history_full.wait(), 3)
+            self.tasks.append(asyncio.create_task(channel._recover()))
+            await asyncio.wait_for(recovered.wait(), 3)
             self.assertGreater(chatter_requests, 3)
             self.assertLessEqual(len(channel.replay_history), 3)
             self.assertIn(original[1], self.transport.connection.streams)
@@ -978,8 +1029,8 @@ class H2WireTest(unittest.IsolatedAsyncioTestCase):
         self.respond(request, b's' * (1024 * 1024))
         response = await opening
         fast, fast_request = await self.post()
-        self.respond(fast_request, b'f' * (128 * 1024))
-        self.assertEqual(await asyncio.wait_for(fast, .5), b'f' * (128 * 1024))
+        self.respond(fast_request, b'f' * (4 * 1024 * 1024))
+        self.assertEqual(await asyncio.wait_for(fast, 2), b'f' * (4 * 1024 * 1024))
         stream = self.transport.connection.streams[request[1]]
         self.assertLessEqual(sum(len(data) for data, _ in stream.chunks), STREAM_RECEIVE_WINDOW)
         await response.aclose()
@@ -988,13 +1039,31 @@ class H2WireTest(unittest.IsolatedAsyncioTestCase):
     async def test_read_timeout_resets_only_its_stream(self):
         self.lane.client.timeout = httpx.Timeout(2, read=.15)
         stalled, request = await self.post()
+        self.lane.client.timeout = httpx.Timeout(2, read=1)
         healthy, healthy_request = await self.post()
-        self.respond(healthy_request)
-        self.assertEqual(await healthy, b'r' * 40)
         with self.assertRaises(httpx.ReadTimeout):
             await stalled
         self.assertEqual(await asyncio.wait_for(self.resets.get(), .5), (request[1], 8))
         self.assertIsNone(self.transport.connection.error)
+        self.respond(healthy_request)
+        self.assertEqual(await healthy, b'r' * 40)
+        self.assertEqual(len(self.connections), 1)
+
+    async def test_last_stream_timeout_reconnects_instead_of_reusing_silent_connection(self):
+        self.lane.client.timeout = httpx.Timeout(2, read=.05)
+        stalled, _ = await self.post()
+        old_connection = self.transport.connection
+        with self.assertRaises(httpx.ReadTimeout):
+            await stalled
+        self.assertIsNotNone(old_connection.error)
+        self.assertTrue(old_connection.writer.is_closing())
+        self.assertFalse(old_connection.streams)
+        self.lane.client.timeout = httpx.Timeout(2, read=1)
+        recovered, request = await self.post()
+        self.respond(request)
+        self.assertEqual(await recovered, b'r' * 40)
+        self.assertIsNot(self.transport.connection, old_connection)
+        self.assertEqual(len(self.connections), 2)
 
     async def test_peer_reset_does_not_break_other_streams(self):
         bad, request = await self.post()
@@ -1044,7 +1113,8 @@ class H2WireTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(self.connections), 1)
         failures = [record for record in captured.records if record.levelname in ('WARNING', 'ERROR')]
         self.assertEqual(len(failures), 1)
-        self.assertIn('reset: 2', failures[0].getMessage())
+        # h2 4.1 (Python 3.8) formats IntEnum values by name.
+        self.assertRegex(failures[0].getMessage(), r'reset: (?:2|ErrorCodes\.INTERNAL_ERROR)\b')
         self.assertIn('down=20', failures[0].getMessage())
         self.assertIn('sid=1', failures[0].getMessage())
 

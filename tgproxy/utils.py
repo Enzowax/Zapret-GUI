@@ -5,7 +5,9 @@ import urllib.request
 import http.client
 import ssl
 import logging
+import os
 import re
+import sys
 
 import certifi
 
@@ -33,7 +35,8 @@ PROTO_PADDED_INTERMEDIATE_INT = 0xDDDDDDDD
 RESERVED_FIRST_BYTES = {0xEF}
 RESERVED_STARTS = {b'\x48\x45\x41\x44', b'\x50\x4F\x53\x54',
                     b'\x47\x45\x54\x20', b'\xee\xee\xee\xee',
-                    b'\xdd\xdd\xdd\xdd', b'\x16\x03\x01\x02'}
+                    b'\xdd\xdd\xdd\xdd', b'\x16\x03\x01\x02',
+                    b'\x4F\x50\x54\x49'}
 RESERVED_CONTINUE = b'\x00\x00\x00\x00'
 
 _GITHUB_IPS: Dict[str, str] = {
@@ -142,9 +145,25 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
             return super().https_open(req)
 
 
+def set_x25519(context: ssl.SSLContext) -> None:
+    try:
+        context.set_ecdh_curve('X25519')
+    except Exception:
+        pass
+
+
 def create_ssl_context(*, check_hostname: bool = True) -> ssl.SSLContext:
-    context = ssl.create_default_context(cafile=certifi.where())
-    context.load_default_certs()
+    context = ssl.create_default_context()
+
+    bundle_dir = getattr(sys, '_MEIPASS', None)
+    try:
+        cafile = (os.path.join(bundle_dir, 'certifi', 'cacert.pem')
+                  if bundle_dir else certifi.where())
+        context.load_verify_locations(cafile=cafile)
+    except Exception:
+        pass
+
+    set_x25519(context)
     context.check_hostname = check_hostname
     return context
 

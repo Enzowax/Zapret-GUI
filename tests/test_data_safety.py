@@ -196,6 +196,7 @@ def test_cf_worker_429_backoff_expires(monkeypatch, retry, expected):
     import tgproxy.pool as pool_module
     now = [100.0]
     monkeypatch.setattr(pool_module.time, "time", lambda: now[0])
+    monkeypatch.setattr(pool_module.time, "monotonic", lambda: now[0])
     pool = _CfWorkerPool()
     pool.report_failure("worker.example", WsHandshakeError(429, "limit", {"retry-after": retry}))
     assert pool.available_domains(["worker.example"]) == []
